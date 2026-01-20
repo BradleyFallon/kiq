@@ -29,61 +29,52 @@ A professional kick drum synthesizer available as both a VST3 plugin and standal
 - Audio interface (CoreAudio compatible)
 - MIDI controller (optional)
 
+## Quick Start
+
+### Build the Standalone App
+
+```bash
+./scripts/build/build_standalone.sh
+```
+
+### Run the Standalone App
+
+```bash
+./scripts/run_standalone.sh
+```
+
+See [docs/STANDALONE_APP_GUIDE.md](docs/STANDALONE_APP_GUIDE.md) for usage instructions.
+
 ## Building
 
-### 1. Clone the Repository
+See [docs/BUILDING.md](docs/BUILDING.md) for detailed build instructions.
+
+### Quick Build
 
 ```bash
-git clone https://github.com/yourusername/kick-drum-synthesizer.git
-cd kick-drum-synthesizer
-```
+# Build everything
+./scripts/build/build.sh
 
-### 2. Download VST3 SDK (for VST3 plugin)
-
-```bash
-mkdir -p external
-cd external
-git clone --recursive https://github.com/steinbergmedia/vst3sdk.git
-cd ..
-```
-
-### 3. Configure and Build
-
-```bash
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Release
-```
-
-### Build Options
-
-- `BUILD_VST3`: Build VST3 plugin (default: ON)
-- `BUILD_STANDALONE`: Build standalone application (default: ON)
-- `BUILD_TESTS`: Build tests (default: ON)
-
-Example:
-```bash
-cmake -DBUILD_VST3=ON -DBUILD_STANDALONE=ON -DBUILD_TESTS=ON ..
+# Build standalone app only
+./scripts/build/build_standalone.sh
 ```
 
 ## Testing
 
-### C++ Unit Tests
+See [scripts/README.md](scripts/README.md) for all available test scripts.
+
+### Run All Tests
 
 ```bash
 cd build
 ctest
-# or
-./bin/kick_drum_tests
 ```
 
-### Property-Based Tests
+### Run Specific Component Tests
 
 ```bash
-cd tests/property
-npm install
-npm test
+./scripts/test/test_sine_driver_compile.sh
+./scripts/test/test_audio_engine_master.sh
 ```
 
 ## Installation
@@ -166,6 +157,15 @@ Presets are stored in JSON format with `.kdpreset` extension.
 ### User Presets Location
 - macOS: `~/Library/Application Support/KickDrumSynth/Presets/User/`
 
+## Documentation
+
+- [Building](docs/BUILDING.md) - Build instructions
+- [Standalone App Guide](docs/STANDALONE_APP_GUIDE.md) - Using the standalone app
+- [Project Structure](docs/PROJECT_STRUCTURE.md) - Codebase organization
+- [Contributing](docs/CONTRIBUTING.md) - Contribution guidelines
+- [Implementation Docs](docs/implementation/) - Component documentation
+- [Platform Integration](docs/) - CoreAudio and CoreMIDI docs
+
 ## Development
 
 ### Project Structure
@@ -180,20 +180,22 @@ kick-drum-synthesizer/
 │   └── standalone/        # Standalone application
 ├── tests/
 │   ├── unit/              # C++ unit tests (Google Test)
-│   └── property/          # Property-based tests (fast-check)
+│   ├── property/          # Property-based tests (fast-check)
+│   └── manual/            # Manual integration tests
+├── scripts/
+│   ├── build/             # Build scripts
+│   ├── test/              # Test scripts
+│   └── run_*.sh           # Runtime scripts
+├── docs/                  # Documentation
+│   ├── implementation/    # Component docs
+│   └── checkpoints/       # Development milestones
 ├── external/              # External dependencies (VST3 SDK)
-└── presets/               # Factory presets
-
+└── .kiro/specs/           # Formal specification
 ```
 
 ### Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass
-6. Submit a pull request
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
 
 ## License
 

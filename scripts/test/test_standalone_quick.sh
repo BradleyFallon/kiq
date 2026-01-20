@@ -3,6 +3,8 @@
 # Quick test script for standalone app
 # This script sends a few commands to test basic functionality
 
+APP_PATH="build/bin/KickDrumSynthStandalone.app/Contents/MacOS/KickDrumSynthStandalone"
+
 echo "=== Quick Standalone App Test ==="
 echo ""
 echo "This will:"
@@ -22,7 +24,7 @@ read
     echo "play 60 0.8"
     sleep 2
     echo "quit"
-} | ./build/bin/KickDrumSynthStandalone.app/Contents/MacOS/KickDrumSynthStandalone
+} | "$APP_PATH"
 
 echo ""
 echo "Test complete!"
