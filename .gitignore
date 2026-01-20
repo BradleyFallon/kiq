@@ -1,0 +1,45 @@
+# Build directories
+build/
+cmake-build-*/
+bin/
+lib/
+dist/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled files
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Test output
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Node modules (for property tests)
+tests/property/node_modules/
+tests/property/package-lock.json
+
+# VST3 SDK (should be downloaded separately)
+external/vst3sdk/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Presets (user presets, not factory)
+presets/user/
+
+# Logs
+*.log
