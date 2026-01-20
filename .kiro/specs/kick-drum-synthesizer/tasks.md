@@ -367,13 +367,13 @@ This implementation plan breaks down the kick drum synthesizer into discrete cod
     - Configure app bundle and Info.plist
     - _Requirements: 9.1_
   
-  - [ ] 17.2 Implement CoreAudio integration
+  - [x] 17.2 Implement CoreAudio integration
     - Initialize CoreAudio output
     - Configure audio device and buffer size
     - Implement audio callback routing to audio engine
     - _Requirements: 9.2, 9.4, 9.5_
   
-  - [ ] 17.3 Implement CoreMIDI integration
+  - [x] 17.3 Implement CoreMIDI integration
     - Enumerate MIDI input devices
     - Register MIDI input callback
     - Route MIDI messages to audio engine

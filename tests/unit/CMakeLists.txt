@@ -48,12 +48,28 @@ add_executable(kick_drum_tests
     main.cpp
 )
 
+# Platform-specific tests
+if(APPLE)
+    target_sources(kick_drum_tests PRIVATE
+        platform/CoreAudioInterfaceTest.cpp
+        platform/CoreMIDIInterfaceTest.cpp
+    )
+endif()
+
 target_link_libraries(kick_drum_tests
     PRIVATE
         kick_drum_audio_engine
         GTest::gtest
         GTest::gtest_main
 )
+
+# Platform-specific libraries
+if(APPLE)
+    target_link_libraries(kick_drum_tests
+        PRIVATE
+            kick_drum_platform
+    )
+endif()
 
 target_include_directories(kick_drum_tests
     PRIVATE

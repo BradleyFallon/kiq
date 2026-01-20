@@ -18,6 +18,9 @@ include(GoogleTest)
 # C++ Unit Tests
 add_subdirectory(unit)
 
+# Manual Tests (for interactive testing)
+add_subdirectory(manual)
+
 # Property-Based Tests (using fast-check via Node.js)
 # Note: Property tests will be run separately via npm/node
 # See tests/property/README.md for setup instructions

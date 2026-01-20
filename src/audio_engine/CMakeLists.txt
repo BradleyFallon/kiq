@@ -26,6 +26,7 @@ add_library(kick_drum_audio_engine STATIC
     # Parameters
     parameters/Parameter.cpp
     parameters/ParameterManager.cpp
+    parameters/ParameterEventQueue.cpp
     
     # Presets
     presets/Preset.cpp
