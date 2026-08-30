@@ -25,6 +25,7 @@ if(APPLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.kickdrum.synthesizer.standalone"
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.kickdrum.synthesizer.standalone"
     )
     
     # Install to Applications folder

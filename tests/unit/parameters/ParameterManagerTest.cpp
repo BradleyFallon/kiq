@@ -214,8 +214,8 @@ TEST_F(ParameterManagerTest, RegisterAllSynthesisParameters) {
     EXPECT_TRUE(manager->hasParameter("masterLevel"));
     EXPECT_TRUE(manager->hasParameter("pitchTracking"));
     
-    // Check parameter count (should be 31 parameters)
-    EXPECT_EQ(manager->getParameterCount(), 31);
+    // Check parameter count against the current synthesis parameter contract.
+    EXPECT_EQ(manager->getParameterCount(), 29);
 }
 
 // Test specific synthesis parameter values

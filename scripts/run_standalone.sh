@@ -6,7 +6,7 @@ APP_PATH="build/bin/KickDrumSynthStandalone.app/Contents/MacOS/KickDrumSynthStan
 
 if [ ! -f "$APP_PATH" ]; then
     echo "Standalone app not found. Building..."
-    ./build_standalone.sh
+    ./scripts/build/build_standalone.sh
 fi
 
 echo "=== Running Kick Drum Synthesizer ==="

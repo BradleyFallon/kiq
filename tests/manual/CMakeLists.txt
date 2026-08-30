@@ -11,6 +11,11 @@ target_link_libraries(test_sample_accurate_params
         kick_drum_audio_engine
 )
 
+target_include_directories(test_sample_accurate_params
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/audio_engine
+)
+
 # CoreAudio integration test (macOS only)
 if(APPLE)
     add_executable(test_coreaudio_integration

@@ -258,7 +258,9 @@ TEST(ReverbTest, DampingAffectsHighFrequencies) {
     float sumLowDamp = 0.0f;
     float sumHighDamp = 0.0f;
     
-    for (int i = 0; i < 1000; i++) {
+    // The shortest comb delay is about 25 ms at 48 kHz, so measure far enough
+    // into the response for damping to affect the feedback tail.
+    for (int i = 0; i < 5000; i++) {
         sumLowDamp += std::abs(reverbLowDamp.process(0.0f));
         sumHighDamp += std::abs(reverbHighDamp.process(0.0f));
     }

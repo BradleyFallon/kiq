@@ -12,7 +12,7 @@ float softClip(float input) {
     const float absInput = std::abs(input);
     
     // For small signals, pass through unchanged
-    if (absInput < 2.0f / 3.0f) {
+    if (absInput <= 2.0f / 3.0f) {
         return input;
     }
     

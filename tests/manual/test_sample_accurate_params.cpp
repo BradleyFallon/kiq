@@ -1,4 +1,4 @@
-#include "include/AudioEngine.h"
+#include "AudioEngine.h"
 #include "parameters/ParameterEventQueue.h"
 #include "parameters/ParameterManager.h"
 #include <iostream>

@@ -374,6 +374,17 @@ bool PresetManager::loadPresetsFromDirectory(const std::string& directory, bool 
     }
 
     closedir(dir);
+
+    // Directory iteration order is unspecified. Keep presets deterministic for
+    // navigation, UI display, and state restoration by sorting each newly
+    // loaded group by its file name.
+    std::stable_sort(presets_.begin(), presets_.end(),
+                     [](const PresetEntry& lhs, const PresetEntry& rhs) {
+                         if (lhs.isFactory != rhs.isFactory) {
+                             return lhs.isFactory && !rhs.isFactory;
+                         }
+                         return lhs.filePath < rhs.filePath;
+                     });
     return true;
 }
 

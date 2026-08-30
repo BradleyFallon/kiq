@@ -70,7 +70,7 @@ tresult PLUGIN_API KickSynthController::setComponentState(IBStream* state)
         // Read parameter ID
         std::string paramId;
         paramId.resize(idLength);
-        if (state->read((void*)paramId.data(), idLength) != idLength)
+        if (streamer.readRaw(paramId.data(), idLength) != idLength)
             return kResultFalse;
 
         // Read parameter value
@@ -78,8 +78,10 @@ tresult PLUGIN_API KickSynthController::setComponentState(IBStream* state)
         if (!streamer.readDouble(value))
             return kResultFalse;
 
-        // TODO: Map string parameter ID to VST3 ParamID and set value
-        // For now, we'll skip this as we need the mapping table
+        if (const auto* mapping = findParameterMapping(paramId))
+        {
+            setParamNormalized(mapping->vstId, normalizeParameterValue(*mapping, value));
+        }
     }
 
     return kResultOk;
@@ -102,96 +104,98 @@ IPlugView* PLUGIN_API KickSynthController::createView(FIDString name)
 void KickSynthController::registerParameters()
 {
     // Generator Parameters
-    parameters.addParameter(STR16("Base Pitch"), STR16("Hz"), 0, 0.5,
+    parameters.addParameter(STR16("Base Pitch"), STR16("Hz"), 0, defaultNormalizedParameterValue(kParamBasePitch),
                            ParameterInfo::kCanAutomate, kParamBasePitch);
     
-    parameters.addParameter(STR16("Sine Level"), STR16("%"), 0, 0.8,
+    parameters.addParameter(STR16("Sine Level"), STR16("%"), 0, defaultNormalizedParameterValue(kParamSineLevel),
                            ParameterInfo::kCanAutomate, kParamSineLevel);
     
-    parameters.addParameter(STR16("Harmonic Ratio"), STR16("x"), 0, 0.2,
+    parameters.addParameter(STR16("Harmonic Ratio"), STR16("x"), 0, defaultNormalizedParameterValue(kParamHarmonicRatio),
                            ParameterInfo::kCanAutomate, kParamHarmonicRatio);
     
-    parameters.addParameter(STR16("Harmonic Level"), STR16("%"), 0, 0.3,
+    parameters.addParameter(STR16("Harmonic Level"), STR16("%"), 0, defaultNormalizedParameterValue(kParamHarmonicLevel),
                            ParameterInfo::kCanAutomate, kParamHarmonicLevel);
     
-    parameters.addParameter(STR16("Harmonic Mod Depth"), STR16("%"), 0, 0.5,
+    parameters.addParameter(STR16("Harmonic Mod Depth"), STR16("%"), 0, defaultNormalizedParameterValue(kParamHarmonicModDepth),
                            ParameterInfo::kCanAutomate, kParamHarmonicModDepth);
     
-    parameters.addParameter(STR16("Noise Level"), STR16("%"), 0, 0.2,
+    parameters.addParameter(STR16("Noise Level"), STR16("%"), 0, defaultNormalizedParameterValue(kParamNoiseLevel),
                            ParameterInfo::kCanAutomate, kParamNoiseLevel);
     
-    parameters.addParameter(STR16("Noise Mod Depth"), STR16("%"), 0, 0.7,
+    parameters.addParameter(STR16("Noise Mod Depth"), STR16("%"), 0, defaultNormalizedParameterValue(kParamNoiseModDepth),
                            ParameterInfo::kCanAutomate, kParamNoiseModDepth);
 
     // Warm-Up Phase Parameters
-    parameters.addParameter(STR16("Warm-Up Duration"), STR16("ms"), 0, 0.2,
+    parameters.addParameter(STR16("Warm-Up Duration"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamWarmUpDuration),
                            ParameterInfo::kCanAutomate, kParamWarmUpDuration);
     
-    parameters.addParameter(STR16("Warm-Up Start Freq"), STR16("Hz"), 0, 0.1,
+    parameters.addParameter(STR16("Warm-Up Start Freq"), STR16("Hz"), 0, defaultNormalizedParameterValue(kParamWarmUpStartFreq),
                            ParameterInfo::kCanAutomate, kParamWarmUpStartFreq);
     
-    parameters.addParameter(STR16("Warm-Up Amplitude"), STR16("%"), 0, 0.5,
+    parameters.addParameter(STR16("Warm-Up Amplitude"), STR16("%"), 0, defaultNormalizedParameterValue(kParamWarmUpAmplitude),
                            ParameterInfo::kCanAutomate, kParamWarmUpAmplitude);
 
     // ADSR Envelope Parameters
-    parameters.addParameter(STR16("Attack"), STR16("ms"), 0, 0.001,
+    parameters.addParameter(STR16("Attack"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamAttack),
                            ParameterInfo::kCanAutomate, kParamAttack);
     
-    parameters.addParameter(STR16("Decay"), STR16("ms"), 0, 0.5,
+    parameters.addParameter(STR16("Decay"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamDecay),
                            ParameterInfo::kCanAutomate, kParamDecay);
     
-    parameters.addParameter(STR16("Sustain"), STR16("%"), 0, 0.0,
+    parameters.addParameter(STR16("Sustain"), STR16("%"), 0, defaultNormalizedParameterValue(kParamSustain),
                            ParameterInfo::kCanAutomate, kParamSustain);
     
-    parameters.addParameter(STR16("Release"), STR16("ms"), 0, 0.1,
+    parameters.addParameter(STR16("Release"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamRelease),
                            ParameterInfo::kCanAutomate, kParamRelease);
 
     // Pitch Envelope Parameters
-    parameters.addParameter(STR16("Pitch Envelope Depth"), STR16("Hz"), 0, 0.25,
+    parameters.addParameter(STR16("Pitch Envelope Depth"), STR16("Hz"), 0, defaultNormalizedParameterValue(kParamPitchEnvelopeDepth),
                            ParameterInfo::kCanAutomate, kParamPitchEnvelopeDepth);
 
+    // Envelope Curve Parameters
+    parameters.addParameter(STR16("Attack Curve"), STR16(""), 3, defaultNormalizedParameterValue(kParamAttackCurve),
+                           ParameterInfo::kCanAutomate, kParamAttackCurve);
+
+    parameters.addParameter(STR16("Decay Curve"), STR16(""), 3, defaultNormalizedParameterValue(kParamDecayCurve),
+                           ParameterInfo::kCanAutomate, kParamDecayCurve);
+
+    parameters.addParameter(STR16("Release Curve"), STR16(""), 3, defaultNormalizedParameterValue(kParamReleaseCurve),
+                           ParameterInfo::kCanAutomate, kParamReleaseCurve);
+
     // Compressor Parameters
-    parameters.addParameter(STR16("Compressor Threshold"), STR16("dB"), 0, 0.8,
+    parameters.addParameter(STR16("Compressor Threshold"), STR16("dB"), 0, defaultNormalizedParameterValue(kParamCompressorThreshold),
                            ParameterInfo::kCanAutomate, kParamCompressorThreshold);
     
-    parameters.addParameter(STR16("Compressor Ratio"), STR16(""), 0, 0.15,
+    parameters.addParameter(STR16("Compressor Ratio"), STR16(""), 0, defaultNormalizedParameterValue(kParamCompressorRatio),
                            ParameterInfo::kCanAutomate, kParamCompressorRatio);
     
-    parameters.addParameter(STR16("Compressor Attack"), STR16("ms"), 0, 0.01,
+    parameters.addParameter(STR16("Compressor Attack"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamCompressorAttack),
                            ParameterInfo::kCanAutomate, kParamCompressorAttack);
     
-    parameters.addParameter(STR16("Compressor Release"), STR16("ms"), 0, 0.1,
+    parameters.addParameter(STR16("Compressor Release"), STR16("ms"), 0, defaultNormalizedParameterValue(kParamCompressorRelease),
                            ParameterInfo::kCanAutomate, kParamCompressorRelease);
     
-    parameters.addParameter(STR16("Compressor Mix"), STR16("%"), 0, 0.5,
+    parameters.addParameter(STR16("Compressor Mix"), STR16("%"), 0, defaultNormalizedParameterValue(kParamCompressorMix),
                            ParameterInfo::kCanAutomate, kParamCompressorMix);
-    
-    parameters.addParameter(STR16("Compressor Bypass"), STR16(""), 0, 0.0,
-                           ParameterInfo::kCanAutomate | ParameterInfo::kIsBypass,
-                           kParamCompressorBypass);
 
     // Reverb Parameters
-    parameters.addParameter(STR16("Reverb Room Size"), STR16("%"), 0, 0.3,
+    parameters.addParameter(STR16("Reverb Room Size"), STR16("%"), 0, defaultNormalizedParameterValue(kParamReverbRoomSize),
                            ParameterInfo::kCanAutomate, kParamReverbRoomSize);
     
-    parameters.addParameter(STR16("Reverb Decay Time"), STR16("s"), 0, 0.1,
+    parameters.addParameter(STR16("Reverb Decay Time"), STR16("s"), 0, defaultNormalizedParameterValue(kParamReverbDecayTime),
                            ParameterInfo::kCanAutomate, kParamReverbDecayTime);
     
-    parameters.addParameter(STR16("Reverb Damping"), STR16("%"), 0, 0.5,
+    parameters.addParameter(STR16("Reverb Damping"), STR16("%"), 0, defaultNormalizedParameterValue(kParamReverbDamping),
                            ParameterInfo::kCanAutomate, kParamReverbDamping);
     
-    parameters.addParameter(STR16("Reverb Mix"), STR16("%"), 0, 0.1,
+    parameters.addParameter(STR16("Reverb Mix"), STR16("%"), 0, defaultNormalizedParameterValue(kParamReverbMix),
                            ParameterInfo::kCanAutomate, kParamReverbMix);
-    
-    parameters.addParameter(STR16("Reverb Bypass"), STR16(""), 0, 0.0,
-                           ParameterInfo::kCanAutomate | ParameterInfo::kIsBypass,
-                           kParamReverbBypass);
 
     // Master Parameters
-    parameters.addParameter(STR16("Master Level"), STR16("%"), 0, 0.8,
+    parameters.addParameter(STR16("Master Level"), STR16("%"), 0, defaultNormalizedParameterValue(kParamMasterLevel),
                            ParameterInfo::kCanAutomate, kParamMasterLevel);
     
-    parameters.addParameter(STR16("Pitch Tracking"), STR16(""), 0, 1.0,
+    parameters.addParameter(STR16("Pitch Tracking"), STR16(""), 1, defaultNormalizedParameterValue(kParamPitchTracking),
                            ParameterInfo::kCanAutomate, kParamPitchTracking);
 }
 

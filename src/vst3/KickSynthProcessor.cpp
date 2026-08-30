@@ -1,8 +1,10 @@
 #include "KickSynthProcessor.h"
 #include "KickSynthCIDs.h"
 #include "AudioEngine.h"
+#include "ParameterEventQueue.h"
 #include "ParameterManager.h"
 #include "base/source/fstreamer.h"
+#include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstevents.h"
 
@@ -155,7 +157,7 @@ tresult PLUGIN_API KickSynthProcessor::setState(IBStream* state)
         // Read parameter ID
         std::string paramId;
         paramId.resize(idLength);
-        if (state->read((void*)paramId.data(), idLength) != idLength)
+        if (streamer.readRaw(paramId.data(), idLength) != idLength)
             return kResultFalse;
 
         // Read parameter value
@@ -163,8 +165,8 @@ tresult PLUGIN_API KickSynthProcessor::setState(IBStream* state)
         if (!streamer.readDouble(value))
             return kResultFalse;
 
-        // Set parameter value
-        paramManager->setParameterValue(paramId, static_cast<float>(value));
+        if (paramManager->hasParameter(paramId))
+            audioEngine_->setParameter(paramId, static_cast<float>(value));
     }
 
     return kResultOk;
@@ -181,7 +183,8 @@ tresult PLUGIN_API KickSynthProcessor::getState(IBStream* state)
 
     // Write version
     uint32 version = 1;
-    streamer.writeInt32u(version);
+    if (!streamer.writeInt32u(version))
+        return kResultFalse;
 
     // Get all parameters
     KickDrum::ParameterManager* paramManager = audioEngine_->getParameterManager();
@@ -191,20 +194,25 @@ tresult PLUGIN_API KickSynthProcessor::getState(IBStream* state)
     std::vector<std::string> paramIds = paramManager->getParameterIds();
     
     // Write number of parameters
-    streamer.writeInt32u(static_cast<uint32>(paramIds.size()));
+    if (!streamer.writeInt32u(static_cast<uint32>(paramIds.size())))
+        return kResultFalse;
 
     // Write each parameter
     for (const auto& paramId : paramIds)
     {
         // Write parameter ID length
-        streamer.writeInt32u(static_cast<uint32>(paramId.length()));
+        if (!streamer.writeInt32u(static_cast<uint32>(paramId.length())))
+            return kResultFalse;
         
         // Write parameter ID
-        state->write((void*)paramId.data(), static_cast<int32>(paramId.length()));
+        if (streamer.writeRaw(paramId.data(), static_cast<TSize>(paramId.length())) !=
+            static_cast<TSize>(paramId.length()))
+            return kResultFalse;
 
         // Write parameter value
         float value = paramManager->getParameterValue(paramId);
-        streamer.writeDouble(static_cast<double>(value));
+        if (!streamer.writeDouble(static_cast<double>(value)))
+            return kResultFalse;
     }
 
     return kResultOk;
@@ -281,27 +289,39 @@ void KickSynthProcessor::processParameterChanges(IParameterChanges* changes)
     if (!changes)
         return;
 
+    auto* paramManager = audioEngine_->getParameterManager();
+    auto* eventQueue = audioEngine_->getParameterEventQueue();
+    if (!paramManager || !eventQueue)
+        return;
+
     int32 numParamsChanged = changes->getParameterCount();
     for (int32 i = 0; i < numParamsChanged; ++i)
     {
         IParamValueQueue* paramQueue = changes->getParameterData(i);
         if (paramQueue)
         {
-            ParamValue value;
-            int32 sampleOffset;
             int32 numPoints = paramQueue->getPointCount();
-            
-            // Get the last point (most recent value)
-            if (numPoints > 0 && 
-                paramQueue->getPoint(numPoints - 1, sampleOffset, value) == kResultOk)
+
+            const auto* mapping = findParameterMapping(paramQueue->getParameterId());
+            if (!mapping)
+                continue;
+
+            for (int32 point = 0; point < numPoints; ++point)
             {
-                // Map VST3 parameter ID to our parameter ID
-                // For now, we'll need to create a mapping
-                // This will be implemented when we add the controller
-                ParamID paramId = paramQueue->getParameterId();
-                
-                // TODO: Map VST3 parameter ID to our parameter string ID
-                // and call audioEngine_->setParameter(paramStringId, value);
+                ParamValue normalizedValue = 0.0;
+                int32 sampleOffset = 0;
+                if (paramQueue->getPoint(point, sampleOffset, normalizedValue) != kResultOk)
+                    continue;
+
+                const float value = static_cast<float>(
+                    denormalizeParameterValue(*mapping, normalizedValue));
+                const std::string parameterId(mapping->engineId);
+
+                // Keep serialized state current and apply every automation point
+                // at the host-provided position in the upcoming audio block.
+                paramManager->setParameterValue(parameterId, value);
+                eventQueue->addEvent(parameterId, value,
+                                     static_cast<uint32_t>(std::max(sampleOffset, 0)));
             }
         }
     }

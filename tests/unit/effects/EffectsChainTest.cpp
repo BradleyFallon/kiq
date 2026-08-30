@@ -128,13 +128,13 @@ TEST_F(EffectsChainTest, ReverbAppliedWhenActive) {
     
     // Process silence - reverb should still produce output (tail)
     float silence = 0.0f;
-    float tailOutput = 0.0f;
-    for (int i = 0; i < 100; ++i) {
-        tailOutput = chain->process(silence);
+    float tailEnergy = 0.0f;
+    for (int i = 0; i < 5000; ++i) {
+        tailEnergy += std::abs(chain->process(silence));
     }
     
     // Reverb tail should produce non-zero output after impulse
-    EXPECT_NE(tailOutput, 0.0f);
+    EXPECT_GT(tailEnergy, 0.0f);
 }
 
 // Test processing order: compressor before reverb
@@ -242,9 +242,9 @@ TEST_F(EffectsChainTest, ResetClearsBothEffects) {
     chain->process(1.0f);
     
     // Process silence - should have reverb tail
-    float outputBeforeReset = 0.0f;
-    for (int i = 0; i < 50; ++i) {
-        outputBeforeReset = chain->process(0.0f);
+    float tailEnergyBeforeReset = 0.0f;
+    for (int i = 0; i < 5000; ++i) {
+        tailEnergyBeforeReset += std::abs(chain->process(0.0f));
     }
     
     // Reset the chain
@@ -253,8 +253,8 @@ TEST_F(EffectsChainTest, ResetClearsBothEffects) {
     // Process silence again - reverb tail should be cleared
     float outputAfterReset = chain->process(0.0f);
     
-    // After reset, output should be closer to zero
-    EXPECT_LT(std::abs(outputAfterReset), std::abs(outputBeforeReset));
+    EXPECT_GT(tailEnergyBeforeReset, 0.0f);
+    EXPECT_FLOAT_EQ(outputAfterReset, 0.0f);
 }
 
 // Test accessing compressor for parameter control
@@ -387,4 +387,3 @@ TEST_F(EffectsChainTest, RequirementProcessingOrder) {
     EXPECT_TRUE(std::isfinite(output));
     EXPECT_NE(output, input);  // Signal should be modified
 }
-

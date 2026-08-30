@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
+
+# CMake initializes the Apple toolchain during project(), so the deployment
+# target must be selected first. Respect an explicit caller-provided value.
+if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING
+        "Minimum macOS deployment version" FORCE)
+endif()
+
 project(KickDrumSynthesizer VERSION 1.0.0 LANGUAGES CXX)
 
 # Set C++ standard
@@ -15,12 +23,6 @@ option(BUILD_TESTS "Build tests" ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-# Platform-specific settings
-if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version")
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
-endif()
 
 # Find required packages
 find_package(Threads REQUIRED)

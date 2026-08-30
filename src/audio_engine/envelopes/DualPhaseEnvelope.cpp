@@ -232,7 +232,9 @@ void DualPhaseEnvelope::transitionToNextPhase() {
         case EnvelopePhase::WARMUP: {
             // Transition to ATTACK after warm-up duration
             float warmUpDurationSamples = warmUpDuration * sampleRate;
-            if (phaseTime >= warmUpDurationSamples) {
+            // Keep the final warm-up sample at the configured amplitude. The
+            // following sample starts the attack at zero.
+            if (phaseTime > warmUpDurationSamples) {
                 currentPhase = EnvelopePhase::ATTACK;
                 phaseTime = 0.0f;
                 // Ensure phase continuity: start attack from 0
