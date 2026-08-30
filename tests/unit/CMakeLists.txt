@@ -4,30 +4,20 @@
 add_executable(kick_drum_tests
     # Generator tests
     generators/SineDriverTest.cpp
-    generators/HarmonicMembraneTest.cpp
     generators/NoiseGeneratorTest.cpp
-    
-    # Modulation tests
-    modulation/RingModulatorTest.cpp
-    modulation/MixerTest.cpp
+    generators/TransientGeneratorTest.cpp
     
     # Envelope tests
-    envelopes/EnvelopeCurvesTest.cpp
-    envelopes/DualPhaseEnvelopeTest.cpp
-    envelopes/PitchEnvelopeTest.cpp
+    envelopes/TrajectoryTest.cpp
     
     # Voice tests
     voice/VoiceTest.cpp
     voice/VoiceAllocatorTest.cpp
     
-    # Effects tests
-    effects/CompressorTest.cpp
-    effects/ReverbTest.cpp
-    effects/EffectsChainTest.cpp
-    
     # Parameter tests
     parameters/ParameterTest.cpp
     parameters/ParameterManagerTest.cpp
+    parameters/ParameterEventQueueTest.cpp
     
     # Preset tests
     presets/PresetTest.cpp

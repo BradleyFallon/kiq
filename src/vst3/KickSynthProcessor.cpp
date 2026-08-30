@@ -315,7 +315,10 @@ void KickSynthProcessor::processParameterChanges(IParameterChanges* changes)
 
                 const float value = static_cast<float>(
                     denormalizeParameterValue(*mapping, normalizedValue));
-                const std::string parameterId(mapping->engineId);
+                const auto* spec = KickDrum::findKickParameterSpec(mapping->engineId);
+                if (!spec)
+                    continue;
+                const std::string parameterId(spec->key);
 
                 // Keep serialized state current and apply every automation point
                 // at the host-provided position in the upcoming audio block.

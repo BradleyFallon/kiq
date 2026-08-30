@@ -49,6 +49,17 @@ void SineDriver::reset() {
     phase_ = 0.0f;
 }
 
+void SineDriver::setPhase(float phase) {
+    phase_ = phase - std::floor(phase);
+    if (phase_ < 0.0f) {
+        phase_ += 1.0f;
+    }
+}
+
+float SineDriver::getPhase() const {
+    return phase_;
+}
+
 float SineDriver::generate() {
     if (!initialized_) {
         return 0.0f; // Return silence if not initialized

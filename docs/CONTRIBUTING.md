@@ -161,22 +161,20 @@ Include in your PR description:
 ### Example PR Description
 
 ```markdown
-## Add Harmonic Membrane Generator
+## Refine Pitch Trajectory Curvature
 
 ### Changes
-- Implemented HarmonicMembrane class with frequency ratio control
-- Added unit tests for frequency ratio accuracy
-- Added property-based test for harmonic generation
+- Refined the per-segment curve mapping
+- Added endpoint and monotonicity coverage
 
 ### Why
-Implements requirement 1.3 from the design document for harmonic content generation.
+Makes trajectory shaping easier to control while preserving node values.
 
 ### Testing
-- Run unit tests: `./bin/kick_drum_tests --gtest_filter=HarmonicMembraneTest.*`
-- Run property tests: `cd tests/property && npm test`
+- Run unit tests: `./build/bin/kick_drum_tests --gtest_filter=TrajectoryTest.*`
 
 ### Breaking Changes
-None
+Changes the sound of non-zero curve values.
 
 ### Related Issues
 Closes #42

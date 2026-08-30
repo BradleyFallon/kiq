@@ -1,213 +1,72 @@
-# Kick Drum Synthesizer
+# Kiq
 
-A professional kick drum synthesizer available as both a VST3 plugin and standalone macOS application. Features a three-generator synthesis engine with ring modulation, dual-phase envelope system, and real-time waveform visualization.
+Kiq is a small kick-drum synthesizer with a shared C++17 DSP engine, a raw
+VST3 wrapper, and a terminal-driven macOS standalone app.
 
-## Features
+The current synthesis model is deliberately simple:
 
-- **Three-Generator Synthesis**: Sine Driver, Harmonic Membrane, and Noise Generator
-- **Ring Modulation**: Complex harmonic content generation
-- **Dual-Phase Envelope System**: Warm-Up Phase and Transient/Decay Phase
-- **Master Effects**: Compressor and Reverb
-- **Real-Time Waveform Visualization**: See your sound as you design it
-- **Preset Management**: Save and recall your favorite kick drum sounds
-- **Low-Latency Audio Processing**: Professional-grade performance
-- **VST3 Plugin**: Use in your favorite DAW
-- **Standalone Application**: Run without a DAW on macOS
+```text
+absolute-Hz pitch trajectory ─┐
+dB amplitude trajectory ─ sine body ─┐
+                                   mix ─ output gain
+trigger ─ click + filtered noise ────┘
+```
 
-## Requirements
+Each pitch and amplitude trajectory has four fixed points and one curvature
+value per segment. Pitch is interpolated in logarithmic frequency space.
+Every trigger resets oscillator phase and deterministic noise state, so the
+same settings and velocity produce the same samples.
 
-### Build Requirements
+## Current status
 
-- CMake 3.20 or later
-- C++17 compatible compiler (Clang, GCC, or MSVC)
-- macOS 11.0 (Big Sur) or later (for standalone app)
-- VST3 SDK (for VST3 plugin)
+- macOS CoreAudio/CoreMIDI standalone builds and runs.
+- The VST3 instrument builds and passes Steinberg's validator.
+- The plugin exposes all 26 trajectory, transient, phase, and output parameters.
+- There is no custom graphical editor yet.
+- Old presets from the previous ADSR/ring-modulation engine are intentionally
+  unsupported.
 
-### Runtime Requirements
+## Build and test
 
-- macOS 11.0 or later
-- Audio interface (CoreAudio compatible)
-- MIDI controller (optional)
+Requirements: CMake 3.20+, Xcode/Apple Clang, and the VST3 SDK at
+`external/vst3sdk` for plugin builds.
 
-## Quick Start
-
-### Build the Standalone App
+Build the standalone and tests with the standard generator:
 
 ```bash
-./scripts/build/build_standalone.sh
+cmake -S . -B build -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON -DBUILD_TESTS=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-### Run the Standalone App
+Build and validate the VST3 using the Xcode generator:
 
 ```bash
-./scripts/run_standalone.sh
+cmake -G Xcode -S . -B cmake-build-vst3-xcode \
+  -DBUILD_VST3=ON -DBUILD_STANDALONE=ON -DBUILD_TESTS=OFF
+cmake --build cmake-build-vst3-xcode --config Release --target KickDrumSynth
 ```
 
-See [docs/STANDALONE_APP_GUIDE.md](docs/STANDALONE_APP_GUIDE.md) for usage instructions.
+The SDK's post-build step runs its validator and links the result into
+`~/Library/Audio/Plug-Ins/VST3/`.
 
-## Building
+## Default hit
 
-See [docs/BUILDING.md](docs/BUILDING.md) for detailed build instructions.
+| Path | Time | Value |
+|---|---:|---:|
+| Pitch | 0 ms | 220 Hz |
+| Pitch | 18 ms | 105 Hz |
+| Pitch | 58 ms | 52 Hz |
+| Pitch | 200 ms | 52 Hz |
+| Amplitude | 0 ms | -60 dB |
+| Amplitude | 0.5 ms | 0 dB |
+| Amplitude | 65 ms | -8 dB |
+| Amplitude | 220 ms | -60 dB |
 
-### Quick Build
+The transient adds a modest two-sample click and filtered deterministic noise
+with a 7 ms decay. MIDI note number does not retune the trajectory; velocity
+scales the hit, note-off leaves the one-shot running, and all-notes-off stops it.
 
-```bash
-# Build everything
-./scripts/build/build.sh
-
-# Build standalone app only
-./scripts/build/build_standalone.sh
-```
-
-## Testing
-
-See [scripts/README.md](scripts/README.md) for all available test scripts.
-
-### Run All Tests
-
-```bash
-cd build
-ctest
-```
-
-### Run Specific Component Tests
-
-```bash
-./scripts/test/test_sine_driver_compile.sh
-./scripts/test/test_audio_engine_master.sh
-```
-
-## Installation
-
-### VST3 Plugin
-
-After building, the VST3 plugin will be installed to:
-- macOS: `~/Library/Audio/Plug-Ins/VST3/KickDrumSynth.vst3`
-
-Or manually install:
-```bash
-cd build
-cmake --install .
-```
-
-### Standalone Application
-
-After building, the standalone app will be in:
-- `build/bin/KickDrumSynthStandalone.app`
-
-Copy to Applications folder:
-```bash
-cp -r build/bin/KickDrumSynthStandalone.app /Applications/
-```
-
-## Usage
-
-### VST3 Plugin
-
-1. Open your DAW (Ableton Live, Logic Pro, etc.)
-2. Create a new instrument track
-3. Load "Kick Drum Synth" from your plugin list
-4. Play MIDI notes to trigger kick drum sounds
-5. Adjust parameters to design your sound
-
-### Standalone Application
-
-1. Launch "Kick Drum Synthesizer" from Applications
-2. Select your audio output device
-3. Select your MIDI input device (optional)
-4. Play MIDI notes or click the trigger button
-5. Adjust parameters to design your sound
-
-## Parameters
-
-### Generators
-- **Base Pitch**: Fundamental frequency (20Hz - 200Hz)
-- **Sine Level**: Sine driver output level
-- **Harmonic Ratio**: Harmonic frequency ratio (0.5x - 8.0x)
-- **Harmonic Level**: Harmonic output level
-- **Harmonic Mod Depth**: Ring modulation depth for harmonics
-- **Noise Level**: Noise output level
-- **Noise Mod Depth**: Ring modulation depth for noise
-
-### Envelopes
-- **Warm-Up Duration**: Pre-transient phase duration (0-100ms)
-- **Warm-Up Start Freq**: Starting frequency for warm-up sweep
-- **Warm-Up Amplitude**: Warm-up phase level
-- **Attack**: Attack time (0-1000ms)
-- **Decay**: Decay time (0-5000ms)
-- **Sustain**: Sustain level (0-100%)
-- **Release**: Release time (0-5000ms)
-- **Pitch Envelope Depth**: Pitch modulation amount (0-2000Hz)
-- **Envelope Curves**: Shape of each envelope segment
-
-### Effects
-- **Compressor**: Threshold, Ratio, Attack, Release, Mix
-- **Reverb**: Room Size, Decay Time, Damping, Mix
-
-### Master
-- **Master Level**: Final output level
-
-## Presets
-
-Presets are stored in JSON format with `.kdpreset` extension.
-
-### Factory Presets Location
-- macOS: `~/Library/Application Support/KickDrumSynth/Presets/Factory/`
-
-### User Presets Location
-- macOS: `~/Library/Application Support/KickDrumSynth/Presets/User/`
-
-## Documentation
-
-- [Building](docs/BUILDING.md) - Build instructions
-- [Standalone App Guide](docs/STANDALONE_APP_GUIDE.md) - Using the standalone app
-- [Project Structure](docs/PROJECT_STRUCTURE.md) - Codebase organization
-- [Contributing](docs/CONTRIBUTING.md) - Contribution guidelines
-- [Implementation Docs](docs/implementation/) - Component documentation
-- [Platform Integration](docs/) - CoreAudio and CoreMIDI docs
-
-## Development
-
-### Project Structure
-
-```
-kick-drum-synthesizer/
-├── src/
-│   ├── audio_engine/      # Core DSP and synthesis
-│   ├── ui/                # User interface
-│   ├── platform/          # Platform-specific code (CoreAudio, CoreMIDI)
-│   ├── vst3/              # VST3 plugin wrapper
-│   └── standalone/        # Standalone application
-├── tests/
-│   ├── unit/              # C++ unit tests (Google Test)
-│   ├── property/          # Property-based tests (fast-check)
-│   └── manual/            # Manual integration tests
-├── scripts/
-│   ├── build/             # Build scripts
-│   ├── test/              # Test scripts
-│   └── run_*.sh           # Runtime scripts
-├── docs/                  # Documentation
-│   ├── implementation/    # Component docs
-│   └── checkpoints/       # Development milestones
-├── external/              # External dependencies (VST3 SDK)
-└── .kiro/specs/           # Formal specification
-```
-
-### Contributing
-
-See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
-
-## License
-
-[Your License Here]
-
-## Credits
-
-- VST is a trademark of Steinberg Media Technologies GmbH
-- Built with VST3 SDK
-- Uses Google Test for unit testing
-- Uses fast-check for property-based testing
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on GitHub.
+See [the core architecture](docs/implementation/TRAJECTORY_DRIVEN_CORE.md),
+[building notes](docs/BUILDING.md), and the
+[standalone guide](docs/STANDALONE_APP_GUIDE.md).

@@ -1,4 +1,5 @@
 #include "ParameterManager.h"
+#include "KickParams.h"
 #ifdef TEST_BUILD
 #include "JSONSerializer.h"
 #else
@@ -110,53 +111,11 @@ bool ParameterManager::resetParameter(const std::string& id) {
 }
 
 void ParameterManager::registerAllSynthesisParameters() {
-    // Generator Parameters
-    registerParameter(Parameter("basePitch", "Base Pitch", 50.0f, 20.0f, 200.0f, "Hz"));
-    registerParameter(Parameter("sineLevel", "Sine Driver Level", 80.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("harmonicRatio", "Harmonic Ratio", 2.0f, 0.5f, 8.0f, "x"));
-    registerParameter(Parameter("harmonicLevel", "Harmonic Level", 30.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("harmonicModDepth", "Harmonic Mod Depth", 50.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("noiseLevel", "Noise Level", 20.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("noiseModDepth", "Noise Mod Depth", 70.0f, 0.0f, 100.0f, "%"));
-    
-    // Warm-Up Phase Parameters
-    registerParameter(Parameter("warmUpDuration", "Warm-Up Duration", 20.0f, 0.0f, 100.0f, "ms"));
-    registerParameter(Parameter("warmUpStartFreq", "Warm-Up Start Freq", 10.0f, 5.0f, 50.0f, "Hz"));
-    registerParameter(Parameter("warmUpAmplitude", "Warm-Up Amplitude", 50.0f, 0.0f, 100.0f, "%"));
-    
-    // ADSR Envelope Parameters
-    registerParameter(Parameter("attack", "Attack Time", 1.0f, 0.0f, 1000.0f, "ms"));
-    registerParameter(Parameter("decay", "Decay Time", 500.0f, 0.0f, 5000.0f, "ms"));
-    registerParameter(Parameter("sustain", "Sustain Level", 0.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("release", "Release Time", 100.0f, 0.0f, 5000.0f, "ms"));
-    
-    // Pitch Envelope Parameters
-    registerParameter(Parameter("pitchEnvelopeDepth", "Pitch Envelope Depth", 500.0f, 0.0f, 2000.0f, "Hz"));
-    
-    // Envelope Curve Parameters (using integer values for enum-like behavior)
-    // 0 = LINEAR, 1 = EXPONENTIAL, 2 = LOGARITHMIC, 3 = CUSTOM
-    registerParameter(Parameter("attackCurve", "Attack Curve", 0.0f, 0.0f, 3.0f, ""));
-    registerParameter(Parameter("decayCurve", "Decay Curve", 1.0f, 0.0f, 3.0f, ""));
-    registerParameter(Parameter("releaseCurve", "Release Curve", 1.0f, 0.0f, 3.0f, ""));
-    
-    // Compressor Parameters
-    registerParameter(Parameter("compressorThreshold", "Compressor Threshold", -12.0f, -60.0f, 0.0f, "dB"));
-    registerParameter(Parameter("compressorRatio", "Compressor Ratio", 4.0f, 1.0f, 20.0f, ":1"));
-    registerParameter(Parameter("compressorAttack", "Compressor Attack", 1.0f, 0.1f, 100.0f, "ms"));
-    registerParameter(Parameter("compressorRelease", "Compressor Release", 100.0f, 10.0f, 1000.0f, "ms"));
-    registerParameter(Parameter("compressorMix", "Compressor Mix", 50.0f, 0.0f, 100.0f, "%"));
-    
-    // Reverb Parameters
-    registerParameter(Parameter("reverbRoomSize", "Reverb Room Size", 30.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("reverbDecayTime", "Reverb Decay Time", 1.0f, 0.1f, 10.0f, "s"));
-    registerParameter(Parameter("reverbDamping", "Reverb Damping", 50.0f, 0.0f, 100.0f, "%"));
-    registerParameter(Parameter("reverbMix", "Reverb Mix", 10.0f, 0.0f, 100.0f, "%"));
-    
-    // Master Output Parameters
-    registerParameter(Parameter("masterLevel", "Master Output Level", 80.0f, 0.0f, 100.0f, "%"));
-    
-    // Pitch Tracking (0 = OFF, 1 = ON)
-    registerParameter(Parameter("pitchTracking", "Pitch Tracking", 1.0f, 0.0f, 1.0f, ""));
+    for (const auto& spec : kKickParameterSpecs) {
+        registerParameter(Parameter(std::string(spec.key), std::string(spec.name),
+                                    getDefaultKickParameter(spec.id), spec.minimum,
+                                    spec.maximum, std::string(spec.unit)));
+    }
 }
 
 std::string ParameterManager::serializeToJSON(const std::string& version) const {

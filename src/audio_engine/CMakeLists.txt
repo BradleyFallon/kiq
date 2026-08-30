@@ -2,22 +2,11 @@
 add_library(kick_drum_audio_engine STATIC
     # Generators
     generators/SineDriver.cpp
-    generators/HarmonicMembrane.cpp
     generators/NoiseGenerator.cpp
-    
-    # Modulation
-    modulation/RingModulator.cpp
-    modulation/GeneratorMixer.cpp
+    generators/TransientGenerator.cpp
     
     # Envelopes
-    envelopes/EnvelopeCurves.cpp
-    envelopes/DualPhaseEnvelope.cpp
-    envelopes/PitchEnvelope.cpp
-    
-    # Effects
-    effects/Compressor.cpp
-    effects/Reverb.cpp
-    effects/EffectsChain.cpp
+    envelopes/Trajectory.cpp
     
     # Voice Management
     voice/Voice.cpp
@@ -25,6 +14,7 @@ add_library(kick_drum_audio_engine STATIC
     
     # Parameters
     parameters/Parameter.cpp
+    parameters/KickParams.cpp
     parameters/ParameterManager.cpp
     parameters/ParameterEventQueue.cpp
     

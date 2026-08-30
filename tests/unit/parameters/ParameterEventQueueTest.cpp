@@ -13,9 +13,9 @@ protected:
 // Test: Adding and retrieving events
 TEST_F(ParameterEventQueueTest, AddAndRetrieveEvents) {
     // Add some events
-    queue.addEvent("basePitch", 50.0f, 0);
-    queue.addEvent("sineLevel", 0.8f, 100);
-    queue.addEvent("harmonicRatio", 2.0f, 50);
+    queue.addEvent("pitch0Hz", 220.0f, 0);
+    queue.addEvent("outputGain", 0.8f, 100);
+    queue.addEvent("noiseDecayMs", 7.0f, 50);
     
     EXPECT_EQ(queue.getEventCount(), 3);
     EXPECT_FALSE(queue.isEmpty());
@@ -30,11 +30,11 @@ TEST_F(ParameterEventQueueTest, AddAndRetrieveEvents) {
     
     // Events should be sorted by sample offset
     ASSERT_EQ(events.size(), 3);
-    EXPECT_EQ(events[0].parameterId, "basePitch");
+    EXPECT_EQ(events[0].parameterId, "pitch0Hz");
     EXPECT_EQ(events[0].sampleOffset, 0);
-    EXPECT_EQ(events[1].parameterId, "harmonicRatio");
+    EXPECT_EQ(events[1].parameterId, "noiseDecayMs");
     EXPECT_EQ(events[1].sampleOffset, 50);
-    EXPECT_EQ(events[2].parameterId, "sineLevel");
+    EXPECT_EQ(events[2].parameterId, "outputGain");
     EXPECT_EQ(events[2].sampleOffset, 100);
 }
 
@@ -131,13 +131,13 @@ TEST_F(ParameterEventQueueTest, ThreadSafety) {
 
 // Test: ParameterEvent construction
 TEST(ParameterEventTest, Construction) {
-    ParameterEvent event1("basePitch", 50.0f, 100);
-    EXPECT_EQ(event1.parameterId, "basePitch");
-    EXPECT_EQ(event1.value, 50.0f);
+    ParameterEvent event1("pitch0Hz", 220.0f, 100);
+    EXPECT_EQ(event1.parameterId, "pitch0Hz");
+    EXPECT_EQ(event1.value, 220.0f);
     EXPECT_EQ(event1.sampleOffset, 100);
     
-    ParameterEvent event2("sineLevel", 0.8f);
-    EXPECT_EQ(event2.parameterId, "sineLevel");
+    ParameterEvent event2("outputGain", 0.8f);
+    EXPECT_EQ(event2.parameterId, "outputGain");
     EXPECT_EQ(event2.value, 0.8f);
     EXPECT_EQ(event2.sampleOffset, 0);  // Default offset
     

@@ -8,14 +8,13 @@ namespace KickDrum {
 
 class VoiceAllocator;
 class ParameterManager;
-class EffectsChain;
 class ParameterEventQueue;
 
 /**
- * @brief Main audio engine coordinating synthesis, effects, and output
+ * @brief Main audio engine coordinating trajectory-driven kick synthesis
  * 
- * The AudioEngine integrates voice allocation, effects processing, and
- * parameter management to generate the final audio output.
+ * The AudioEngine integrates one-shot voice allocation and parameter
+ * management to generate the final audio output.
  */
 class AudioEngine {
 public:
@@ -64,20 +63,11 @@ public:
      */
     float getSampleRate() const;
 
-    /**
-     * @brief Set the master output level
-     * @param level Master level (0.0 to 1.0)
-     * 
-     * The master level is applied after all effects processing.
-     * Values outside [0.0, 1.0] are clamped.
-     */
-    void setMasterLevel(float level);
+    /** Set the authoritative output gain in the [0, 1] range. */
+    void setOutputGain(float gain);
 
-    /**
-     * @brief Get the current master output level
-     * @return Master level (0.0 to 1.0)
-     */
-    float getMasterLevel() const;
+    /** Get the current output gain. */
+    float getOutputGain() const;
 
     /**
      * @brief Enable or disable soft clipping
@@ -110,12 +100,6 @@ public:
     bool isNaNDetectionEnabled() const;
 
     /**
-     * @brief Get the effects chain for parameter control
-     * @return Pointer to effects chain (may be null if not initialized)
-     */
-    EffectsChain* getEffectsChain();
-
-    /**
      * @brief Get the voice allocator for direct access
      * @return Pointer to voice allocator (may be null if not initialized)
      */
@@ -133,9 +117,8 @@ public:
     /**
      * @brief Set a parameter value immediately (non-sample-accurate)
      * 
-     * This is a convenience method that updates the parameter in the
-     * ParameterManager and schedules an immediate event (offset 0) in
-     * the parameter event queue.
+     * This is a convenience method that updates KickParams, active voices,
+     * and the ParameterManager immediately.
      * 
      * For sample-accurate control, use getParameterEventQueue() directly
      * and add events with specific sample offsets.

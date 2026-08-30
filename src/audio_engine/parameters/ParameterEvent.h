@@ -17,7 +17,7 @@ namespace KickDrum {
  */
 struct ParameterEvent {
     /**
-     * @brief Parameter ID (e.g., "basePitch", "sineLevel")
+     * @brief Parameter ID (e.g., "pitch0Hz", "outputGain")
      */
     std::string parameterId;
     

@@ -64,7 +64,7 @@ mkdir build
 cd build
 
 # Configure
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_VST3=OFF
 
 # Build
 cmake --build . --config Release
@@ -142,12 +142,16 @@ cmake .. -DBUILD_VST3=OFF -DBUILD_STANDALONE=OFF
 cmake --build . --target kick_drum_audio_engine
 ```
 
-### VST3 Plugin Only
+### VST3 Plugin Only (macOS)
 
 ```bash
-cmake .. -DBUILD_STANDALONE=OFF
-cmake --build . --target KickDrumSynth
+cmake -G Xcode -S . -B cmake-build-vst3-xcode \
+  -DBUILD_VST3=ON -DBUILD_STANDALONE=OFF -DBUILD_TESTS=OFF
+cmake --build cmake-build-vst3-xcode --config Release --target KickDrumSynth
 ```
+
+The Xcode generator is required by the bundled SDK's macOS Objective-C++
+targets. Its post-build step runs Steinberg's validator.
 
 ### Standalone App Only
 

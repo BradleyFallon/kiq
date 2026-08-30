@@ -4,6 +4,7 @@
 #include "../platform/audio/CoreAudioInterface.h"
 #include "../platform/midi/CoreMIDIInterface.h"
 #include "../audio_engine/midi/MIDIHandler.h"
+#include "../audio_engine/parameters/ParameterManager.h"
 #include "AudioEngine.h"
 #include <iostream>
 #include <thread>
@@ -162,7 +163,7 @@ void StandaloneApp::printHelp() {
     std::cout << "  quit                    - Exit application" << std::endl;
     std::cout << std::endl;
     std::cout << "Example: play 60 0.8" << std::endl;
-    std::cout << "Example: param basePitch 50.0" << std::endl;
+    std::cout << "Example: param pitch0Hz 220.0" << std::endl;
     std::cout << std::endl;
 }
 
@@ -217,19 +218,15 @@ void StandaloneApp::processCommand(const std::string& input) {
     }
     else if (command == "list" || command == "l") {
         std::cout << "Available parameters:" << std::endl;
-        std::cout << "  basePitch (20-200 Hz)" << std::endl;
-        std::cout << "  sineLevel (0-1)" << std::endl;
-        std::cout << "  harmonicRatio (0.5-8)" << std::endl;
-        std::cout << "  harmonicLevel (0-1)" << std::endl;
-        std::cout << "  harmonicModDepth (0-1)" << std::endl;
-        std::cout << "  noiseLevel (0-1)" << std::endl;
-        std::cout << "  noiseModDepth (0-1)" << std::endl;
-        std::cout << "  attack (0-1 seconds)" << std::endl;
-        std::cout << "  decay (0-5 seconds)" << std::endl;
-        std::cout << "  sustain (0-1)" << std::endl;
-        std::cout << "  release (0-5 seconds)" << std::endl;
-        std::cout << "  pitchEnvelopeDepth (0-2000 Hz)" << std::endl;
-        std::cout << "  masterLevel (0-1)" << std::endl;
+        for (const auto& id : audioEngine_->getParameterManager()->getParameterIds()) {
+            const auto* parameter = audioEngine_->getParameterManager()->getParameter(id);
+            std::cout << "  " << id << " (" << parameter->getMinValue() << "-"
+                      << parameter->getMaxValue();
+            if (!parameter->getUnit().empty()) {
+                std::cout << " " << parameter->getUnit();
+            }
+            std::cout << ")" << std::endl;
+        }
     }
     else if (command == "preset") {
         std::string presetName;
