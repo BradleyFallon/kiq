@@ -79,8 +79,10 @@ bool CoreAudioInterface::initializeWithDevice(AudioDeviceID deviceId) {
     // Initialize audio engine with device sample rate
     if (audioEngine_) {
         audioEngine_->initialize(static_cast<float>(sampleRate_));
+        audioEngine_->prepare(bufferSize_);
         std::cout << "CoreAudioInterface: Initialized audio engine at " << sampleRate_ << " Hz" << std::endl;
     }
+    interleavedBuffer_.resize(static_cast<std::size_t>(bufferSize_) * numChannels_);
     
     initialized_ = true;
     
@@ -567,12 +569,15 @@ OSStatus CoreAudioInterface::render(
     
     UInt32 numChannels = ioData->mNumberBuffers;
     
-    // Allocate temporary interleaved buffer
-    std::vector<float> interleavedBuffer(inNumberFrames * numChannels);
+    const std::size_t requiredSamples =
+        static_cast<std::size_t>(inNumberFrames) * numChannels;
+    if (interleavedBuffer_.size() < requiredSamples) {
+        interleavedBuffer_.resize(requiredSamples);
+    }
     
     // Process audio through the engine (interleaved format)
     audioEngine_->processBlock(
-        interleavedBuffer.data(),
+        interleavedBuffer_.data(),
         inNumberFrames,
         numChannels
     );
@@ -582,7 +587,7 @@ OSStatus CoreAudioInterface::render(
         float* channelData = static_cast<float*>(ioData->mBuffers[ch].mData);
         
         for (UInt32 frame = 0; frame < inNumberFrames; ++frame) {
-            channelData[frame] = interleavedBuffer[frame * numChannels + ch];
+            channelData[frame] = interleavedBuffer_[frame * numChannels + ch];
         }
     }
     

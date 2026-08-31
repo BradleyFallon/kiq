@@ -1,251 +1,68 @@
-# Kick Drum Synthesizer - Standalone App Guide
+# Standalone app
 
-## Quick Start
-
-### Building
+Build and open the graphical macOS app:
 
 ```bash
-./build_standalone.sh
+cmake -S . -B build \
+  -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON -DBUILD_TESTS=OFF
+cmake --build build --target KickDrumSynthStandalone -j
+open build/bin/KickDrumSynthStandalone.app
 ```
 
-### Running
-
-```bash
-./run_standalone.sh
-```
-
-Or directly:
-```bash
-./build/bin/KickDrumSynthStandalone.app/Contents/MacOS/KickDrumSynthStandalone
-```
-
-## Features
-
-The standalone app provides a terminal-based interface for testing the kick drum synthesizer with:
-
-- **Audio Output**: CoreAudio integration for real-time audio playback
-- **MIDI Input**: CoreMIDI integration for MIDI controller support
-- **Parameter Control**: Adjust synthesis parameters in real-time
-- **Note Triggering**: Play notes via keyboard or MIDI controller
-
-## Commands
-
-### Playing Notes
-
-```
-play <note> [velocity]
-```
-
-Examples:
-- `play 60` - Play middle C with default velocity (0.8)
-- `play 60 1.0` - Play middle C with maximum velocity
-- `play 48 0.5` - Play a lower note with softer velocity
-
-Shorthand: `p 60 0.8`
-
-### Stopping Notes
-
-```
-stop <note>
-```
-
-Example:
-- `stop 60` - Release note 60
-
-Shorthand: `s 60`
-
-### Parameter Control
-
-```
-param <name> <value>
-```
-
-Available parameters:
-- `basePitch` (20-200 Hz) - Fundamental frequency
-- `sineLevel` (0-1) - Sine driver level
-- `harmonicRatio` (0.5-8) - Harmonic frequency ratio
-- `harmonicLevel` (0-1) - Harmonic level
-- `harmonicModDepth` (0-1) - Harmonic ring modulation depth
-- `noiseLevel` (0-1) - Noise level
-- `noiseModDepth` (0-1) - Noise ring modulation depth
-- `attack` (0-1 seconds) - Attack time
-- `decay` (0-5 seconds) - Decay time
-- `sustain` (0-1) - Sustain level
-- `release` (0-5 seconds) - Release time
-- `pitchEnvelopeDepth` (0-2000 Hz) - Pitch envelope depth
-- `masterLevel` (0-1) - Master output level
-
-Examples:
-- `param basePitch 50.0` - Set base pitch to 50 Hz (deep kick)
-- `param attack 0.001` - Set fast attack (1ms)
-- `param decay 0.5` - Set 500ms decay
-- `param harmonicRatio 2.0` - Set harmonic to 2x base frequency
-
-### List Parameters
-
-```
-list
-```
-
-Shows all available parameters with their ranges.
-
-Shorthand: `l`
-
-### MIDI Devices
-
-```
-midi
-```
-
-Lists all available MIDI input devices and shows which one is connected.
-
-Shorthand: `m`
-
-### Help
-
-```
-help
-```
-
-Shows all available commands.
-
-Shorthand: `h` or `?`
-
-### Quit
-
-```
-quit
-```
-
-Exit the application.
-
-Shorthand: `q` or `exit`
-
-## MIDI Controller Support
-
-The app automatically connects to the first available MIDI device on startup. You can:
-
-1. **Play notes** - MIDI note-on/off messages trigger synthesis
-2. **Control parameters** - MIDI CC messages can be mapped to parameters
-3. **Pitch bend** - Pitch bend wheel modulates the pitch
-
-To see available MIDI devices, use the `midi` command.
-
-## Example Session
-
-```
-=== Kick Drum Synthesizer ===
-Initializing...
-
-Audio initialized:
-  Device: Built-in Output
-  Sample Rate: 48000 Hz
-  Buffer Size: 512 frames
-
-Available MIDI devices:
-  [0] USB MIDI Interface (Manufacturer) - Online
-Connected to MIDI device: USB MIDI Interface
-
-Audio started successfully
-
-Commands:
-  play <note> [velocity]  - Trigger a note (note: 0-127, velocity: 0.0-1.0)
-  stop <note>             - Release a note
-  param <name> <value>    - Set a parameter
-  list                    - List all parameters
-  preset <name>           - Load a preset
-  save <name>             - Save current settings as preset
-  midi                    - List MIDI devices
-  help                    - Show this help
-  quit                    - Exit application
-
-Example: play 60 0.8
-Example: param basePitch 50.0
-
-> play 60 0.8
-Playing note 60 with velocity 0.8
-
-> param basePitch 40.0
-Set basePitch = 40
-
-> param decay 1.0
-Set decay = 1
-
-> play 60 1.0
-Playing note 60 with velocity 1
-
-> quit
-```
-
-## Sound Design Tips
-
-### Deep Sub Kick
-```
-param basePitch 35.0
-param sineLevel 1.0
-param harmonicLevel 0.0
-param noiseLevel 0.0
-param attack 0.001
-param decay 1.5
-param pitchEnvelopeDepth 800.0
-play 60 1.0
-```
-
-### Punchy Kick
-```
-param basePitch 60.0
-param sineLevel 0.8
-param harmonicLevel 0.3
-param harmonicRatio 2.0
-param noiseLevel 0.2
-param attack 0.001
-param decay 0.3
-param pitchEnvelopeDepth 1200.0
-play 60 0.9
-```
-
-### 808-Style Kick
-```
-param basePitch 50.0
-param sineLevel 0.9
-param harmonicLevel 0.1
-param harmonicRatio 1.5
-param noiseLevel 0.05
-param attack 0.001
-param decay 0.8
-param pitchEnvelopeDepth 1000.0
-play 60 0.85
-```
-
-## Troubleshooting
-
-### No Audio Output
-
-1. Check that your audio device is working
-2. Try adjusting the master level: `param masterLevel 0.8`
-3. Make sure you're triggering notes: `play 60 0.8`
-
-### No MIDI Input
-
-1. Check that your MIDI device is connected
-2. Use `midi` command to list available devices
-3. The app connects to the first device automatically on startup
-
-### Audio Glitches
-
-1. Try increasing the buffer size (requires rebuild with different CoreAudio settings)
-2. Close other audio applications
-3. Check CPU usage
-
-## Next Steps
-
-- Load and save presets (coming soon)
-- GUI interface (coming soon)
-- VST3 plugin version (coming soon)
-
-## Requirements
-
-- macOS 11.0 (Big Sur) or later
-- Audio output device
-- Optional: MIDI input device for controller support
-
+The app opens the default CoreAudio output and connects the first available
+MIDI input. Click **HIT** (or press Space/Return after clicking the editor) to
+audition the current kick.
+
+The membrane-tension and energy-decay panels are the actual synthesis
+trajectories:
+
+- Drag numbered points to edit their value and, except for point 1, time.
+- Drag the smaller dot on each segment to edit curvature.
+- Drag knobs vertically. Shift-drag is finer, the mouse wheel makes small
+  changes, and double-click restores a default.
+- Use the **MODEL** page to balance the explicit **MEMBRANE**, **IMPACT**,
+  **AIR**, and optional **SAMPLE** layers. **STRIKE** moves from a center hit
+  toward the rim; **AIR DECAY** and **BEATER** shape the finite-contact and
+  band-limited transient.
+- Rotate the fundamental with **PHASE**. Enable **PHASE LOCK** above the tension
+  graph and drag its vertical marker to choose the time at which the
+  fundamental must reach that phase.
+- Use the **OUTPUT** page for fixed-split low, mid, and high EQ, tanh
+  saturation, the soft-limiter ceiling, and final output gain.
+- The response panel re-renders the complete engine after parameter changes.
+  Its thin cyan line is the post-output-stage waveform and the orange line is
+  the time-aligned fundamental tuning curve. An imported reference adds purple
+  waveform and pitch overlays.
+- Click **LOOP** for repeated audition, then set 40–240 BPM with **TEMPO**. The
+  audio engine schedules repeats at exact sample offsets, but the loop is not
+  synchronized to DAW transport.
+- The right-side LEDs show output peak and clip activity.
+
+The header provides the file and matching workflows:
+
+- Open **PRESET** for seven factory sounds or to save/load the strict current
+  `.kiqpreset` format. A saved preset includes all 35 parameters and embeds the
+  optional mono sample layer when present. Presets from the removed
+  ADSR/ring-modulation engine are not supported.
+- Use the arrow buttons, Command-Z, and Shift-Command-Z to move through up to
+  30 parameter snapshots. Loading a preset file or reference starts a new
+  history, while factory-preset changes remain undoable; sample replacement is
+  not independently undoable.
+- Click **IMPORT**, or drop a WAV anywhere on the editor. Kiq downmixes it,
+  finds a likely low-frequency percussive onset, displays its waveform/pitch,
+  fits the trajectories and physical controls, and extracts a short transient
+  into the sample layer. **FIT** reapplies the estimated model and **ALIGN**
+  applies its fundamental phase and lock-time estimate.
+- Click **EXPORT / DRAG** to save a deterministic 48 kHz mono, 24-bit PCM WAV.
+  Drag the same button instead to offer a freshly rendered WAV to a DAW or file
+  target that accepts file-path drops.
+
+Kicks are one-shots. MIDI note number does not transpose the trajectory;
+velocity changes level, and note-off lets the current decay finish. The
+standalone currently routes note-on and velocity only; pitch bend and MIDI CC
+control are not connected to the audio engine yet. Reference matching is a
+deterministic heuristic, not an exact recreation or stem separator, and the
+sample layer contains only its extracted transient rather than full reference
+playback. LOOP is driven by Kiq's audio clock, not MIDI clock or DAW transport.
+The limiter is a smooth ceiling-scaled clipper rather than a look-ahead
+dynamics processor.

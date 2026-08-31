@@ -1,4 +1,8 @@
-# Setup Complete ✓
+# Historical Setup Snapshot
+
+> This file records the repository's initial setup and is not current build
+> documentation. See [Building Kiq](BUILDING.md) for supported commands and
+> dependencies.
 
 The Kick Drum Synthesizer project structure and build system have been successfully set up!
 

@@ -15,12 +15,8 @@ namespace KickDrum {
  * providing centralized access for getting and setting parameter values.
  * It supports parameter registration, value access, and serialization.
  * 
- * All synthesis parameters defined in the design document are registered
- * here, including:
- * - Generator parameters (sine, harmonic, noise)
- * - Envelope parameters (warm-up, ADSR, pitch envelope)
- * - Effects parameters (compressor, reverb)
- * - Master output parameters
+ * The registered synthesis parameters mirror the authoritative KickParams
+ * trajectory model.
  */
 class ParameterManager {
 public:
@@ -127,14 +123,8 @@ public:
     /**
      * @brief Register all synthesis parameters
      * 
-     * This registers all parameters defined in the design document:
-     * - Base Pitch, Sine Level, Harmonic Ratio, Harmonic Level, etc.
-     * - Warm-Up Phase parameters
-     * - ADSR envelope parameters
-     * - Pitch envelope parameters
-     * - Compressor parameters
-     * - Reverb parameters
-     * - Master output level
+     * This registers the fixed pitch/amplitude trajectory, membrane strike,
+     * transient, and output parameters.
      */
     void registerAllSynthesisParameters();
 

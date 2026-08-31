@@ -81,7 +81,7 @@ int main() {
     
     // Test 7: Trigger a note to verify audio callback is working
     std::cout << "Test 7: Triggering a test note (60, velocity 0.8)..." << std::endl;
-    audioEngine.noteOn(60, 0.8f);
+    audioEngine.enqueueNoteOn(60, 0.8f);
     std::cout << "Note triggered - you should hear a kick drum sound" << std::endl;
     std::cout << "Waiting 2 seconds..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -89,7 +89,7 @@ int main() {
     
     // Test 8: Trigger another note
     std::cout << "Test 8: Triggering another note (48, velocity 1.0)..." << std::endl;
-    audioEngine.noteOn(48, 1.0f);
+    audioEngine.enqueueNoteOn(48, 1.0f);
     std::cout << "Note triggered - you should hear a lower kick drum sound" << std::endl;
     std::cout << "Waiting 2 seconds..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -112,7 +112,7 @@ int main() {
     
     // Trigger one more note
     std::cout << "Triggering final test note..." << std::endl;
-    audioEngine.noteOn(72, 0.9f);
+    audioEngine.enqueueNoteOn(72, 0.9f);
     std::cout << "Waiting 2 seconds..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));
     std::cout << std::endl;

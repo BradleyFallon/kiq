@@ -19,19 +19,13 @@ See [BUILDING.md](BUILDING.md) for detailed build instructions.
 
 Quick setup:
 ```bash
-# Install dependencies
-mkdir -p external
-cd external
-git clone --recursive https://github.com/steinbergmedia/vst3sdk.git
-cd ..
-
-# Build
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-cmake --build .
+# Configure the portable core engine and tests
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_VST3=OFF -DBUILD_STANDALONE=OFF
+cmake --build build
 
 # Run tests
-ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 ## Code Style
@@ -91,11 +85,6 @@ All new features should include tests:
    - Test edge cases
    - Test error handling
 
-2. **Property-Based Tests** (TypeScript with fast-check)
-   - Test universal properties
-   - Minimum 100 iterations
-   - Reference design document properties
-
 ### Test Example
 
 ```cpp
@@ -130,10 +119,6 @@ TEST(SineDriverTest, HandlesZeroFrequency) {
 cd build
 ctest --output-on-failure
 
-# Property-based tests
-cd tests/property
-npm test
-
 # Run specific test
 ./bin/kick_drum_tests --gtest_filter=SineDriverTest.*
 ```
@@ -161,22 +146,20 @@ Include in your PR description:
 ### Example PR Description
 
 ```markdown
-## Add Harmonic Membrane Generator
+## Refine Pitch Trajectory Curvature
 
 ### Changes
-- Implemented HarmonicMembrane class with frequency ratio control
-- Added unit tests for frequency ratio accuracy
-- Added property-based test for harmonic generation
+- Refined the per-segment curve mapping
+- Added endpoint and monotonicity coverage
 
 ### Why
-Implements requirement 1.3 from the design document for harmonic content generation.
+Makes trajectory shaping easier to control while preserving node values.
 
 ### Testing
-- Run unit tests: `./bin/kick_drum_tests --gtest_filter=HarmonicMembraneTest.*`
-- Run property tests: `cd tests/property && npm test`
+- Run unit tests: `./build/bin/kick_drum_tests --gtest_filter=TrajectoryTest.*`
 
 ### Breaking Changes
-None
+Changes the sound of non-zero curve values.
 
 ### Related Issues
 Closes #42

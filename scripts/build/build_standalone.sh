@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Build script for Kick Drum Synthesizer Standalone App
+# Build script for the Kiq standalone app
 
 set -e  # Exit on error
 
-echo "=== Building Kick Drum Synthesizer Standalone App ==="
+echo "=== Building Kiq Standalone App ==="
 echo ""
 
 # Create build directory if it doesn't exist

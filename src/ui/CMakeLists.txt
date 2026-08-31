@@ -1,42 +1,29 @@
-# UI Library
 add_library(kick_drum_ui STATIC
-    # Waveform Display
-    waveform/WaveformDisplay.cpp
-    
-    # Parameter Controls
-    controls/ParameterControl.cpp
-    controls/Knob.cpp
-    controls/Slider.cpp
-    
-    # Visualizers
-    visualizers/EnvelopeVisualizer.cpp
-    
-    # Preset Browser
-    preset_browser/PresetBrowser.cpp
-    
-    # Main UI
-    MainUI.cpp
+    KiqMainView.cpp
+    KiqFactoryPresets.cpp
+    include/KiqFactoryPresets.h
+    include/KiqMainView.h
+    include/KiqUIBridge.h
 )
 
 target_include_directories(kick_drum_ui
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/analysis
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/parameters
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/envelopes
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/workflow
+        ${VST3_SDK_PATH}/vstgui4
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/export
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/presets
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/utils
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/voice
 )
 
 target_link_libraries(kick_drum_ui
     PUBLIC
         kick_drum_audio_engine
+        vstgui
 )
-
-# Platform-specific UI frameworks
-if(APPLE)
-    find_library(COCOA_FRAMEWORK Cocoa)
-    find_library(QUARTZCORE_FRAMEWORK QuartzCore)
-    target_link_libraries(kick_drum_ui
-        PRIVATE
-            ${COCOA_FRAMEWORK}
-            ${QUARTZCORE_FRAMEWORK}
-    )
-endif()

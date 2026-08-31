@@ -20,11 +20,11 @@ TEST(DSPUtilsTest, SoftClipPassesThroughSmallSignals) {
 }
 
 TEST(DSPUtilsTest, SoftClipLimitsLargeSignals) {
-    // Signals exceeding ±1.0 should be limited to ±1.0
-    EXPECT_FLOAT_EQ(softClip(1.5f), 1.0f);
-    EXPECT_FLOAT_EQ(softClip(-1.5f), -1.0f);
-    EXPECT_FLOAT_EQ(softClip(2.0f), 1.0f);
-    EXPECT_FLOAT_EQ(softClip(-2.0f), -1.0f);
+    // Large signals approach full scale without crossing it.
+    EXPECT_GT(softClip(1.5f), 0.99f);
+    EXPECT_LT(softClip(-1.5f), -0.99f);
+    EXPECT_GT(softClip(2.0f), 0.999f);
+    EXPECT_LT(softClip(-2.0f), -0.999f);
     EXPECT_FLOAT_EQ(softClip(10.0f), 1.0f);
     EXPECT_FLOAT_EQ(softClip(-10.0f), -1.0f);
 }
@@ -88,14 +88,31 @@ TEST(DSPUtilsTest, SoftClipBufferProcessesAllSamples) {
 }
 
 TEST(DSPUtilsTest, SoftClipHandlesEdgeCases) {
-    // Test exact boundary values
-    EXPECT_FLOAT_EQ(softClip(1.0f), 1.0f);
-    EXPECT_FLOAT_EQ(softClip(-1.0f), -1.0f);
-    
     // Test transition point (2/3)
     float transition = 2.0f / 3.0f;
     float output = softClip(transition);
     EXPECT_FLOAT_EQ(output, transition);  // Should pass through at boundary
+}
+
+TEST(DSPUtilsTest, SoftClipIsContinuousAndMonotonic) {
+    const float transition = 2.0f / 3.0f;
+    EXPECT_NEAR(softClip(transition - 1.0e-5f),
+                softClip(transition + 1.0e-5f), 3.0e-5f);
+
+    float previous = softClip(0.0f);
+    for (int step = 1; step <= 4000; ++step) {
+        const float current = softClip(static_cast<float>(step) / 1000.0f);
+        EXPECT_GE(current, previous);
+        previous = current;
+    }
+}
+
+TEST(DSPUtilsTest, SoftClipNeverExpandsTheSignal) {
+    for (int step = 0; step <= 4000; ++step) {
+        const float input = static_cast<float>(step) / 1000.0f;
+        EXPECT_LE(std::abs(softClip(input)), input + 1.0e-6f);
+        EXPECT_LE(std::abs(softClip(-input)), input + 1.0e-6f);
+    }
 }
 
 // ============================================================================

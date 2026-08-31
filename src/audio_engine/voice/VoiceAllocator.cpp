@@ -1,157 +1,129 @@
 #include "VoiceAllocator.h"
+
 #include <algorithm>
-#include <limits>
+#include <cmath>
 
 namespace KickDrum {
 
 VoiceAllocator::VoiceAllocator()
-    : sampleRate_(44100.0f)
-    , initialized_(false)
-{
-    // Create voice pool with MAX_POLYPHONY voices
-    voices_.resize(MAX_POLYPHONY);
+    : params_(kDefaultKickParams)
+    , sampleLayer_(nullptr)
+    , sampleLayerRevision_(0)
+    , sampleRate_(48000.0f)
+    , initialized_(false) {
+}
+
+void VoiceAllocator::setSampleLayer(const SampleLayerData* sampleLayer,
+                                    std::uint64_t revision) {
+    // Active hits retain the pointer/revision captured at trigger. AudioEngine
+    // reclaims retired immutable buffers only after all such revisions finish.
+    sampleLayer_ = sampleLayer;
+    sampleLayerRevision_ = sampleLayer ? revision : 0;
 }
 
 void VoiceAllocator::initialize(float sampleRate) {
-    sampleRate_ = sampleRate;
-    
-    // Initialize all voices with the sample rate
+    sampleRate_ = std::isfinite(sampleRate) && sampleRate > 0.0f
+                      ? sampleRate
+                      : 48000.0f;
     for (auto& voice : voices_) {
-        voice.initialize(sampleRate);
+        voice.initialize(sampleRate_);
+        voice.setParams(params_);
     }
-    
     initialized_ = true;
+}
+
+void VoiceAllocator::setSampleRate(float sampleRate) {
+    initialize(sampleRate);
+}
+
+void VoiceAllocator::setParams(const KickParams& params) {
+    params_ = sanitizeKickParams(params);
+    for (auto& voice : voices_) {
+        if (voice.isActive()) {
+            // A kick is a physical event: keep its trajectory, membrane, and
+            // transient snapshot stable for the rest of that hit. Output is
+            // the one live control and is ramped inside Voice to avoid clicks.
+            voice.setOutputGain(params_.outputGain);
+        }
+    }
+
+    // Idle voices are configured exactly once when allocated below. Rebuilding
+    // every idle membrane and phase-lock trajectory at every automation point
+    // is redundant and can make dense host automation miss realtime deadlines.
+}
+
+void VoiceAllocator::setOutputStageParams(const OutputStageParams& params) {
+    params_.outputStage = params;
 }
 
 Voice* VoiceAllocator::allocateVoice(int note, float velocity) {
     if (!initialized_) {
         return nullptr;
     }
-    
-    Voice* voice = nullptr;
-    
-    // Step 1: Try to find an idle voice
-    voice = findIdleVoice();
-    
-    // Step 2: If no idle voice, steal the oldest voice
-    if (voice == nullptr) {
+
+    Voice* voice = findIdleVoice();
+    if (!voice) {
         voice = findOldestVoice();
     }
-    
-    // Step 3: Trigger the allocated voice
-    if (voice != nullptr) {
+    if (voice) {
+        voice->setParams(params_);
+        voice->setSampleLayer(sampleLayer_, sampleLayerRevision_);
         voice->trigger(note, velocity);
     }
-    
     return voice;
 }
 
-void VoiceAllocator::releaseVoice(int note) {
-    // Find the voice playing this note
-    Voice* voice = findVoiceByNote(note);
-    
-    if (voice != nullptr) {
-        voice->release();
-    }
+void VoiceAllocator::releaseVoice(int) {
+    // Kick hits are one-shots; note-off intentionally does not truncate them.
 }
 
 void VoiceAllocator::releaseAll() {
-    // Release all active voices
     for (auto& voice : voices_) {
-        if (voice.isActive()) {
-            voice.release();
-        }
+        voice.stop();
     }
 }
 
 void VoiceAllocator::renderBuffer(float* buffer, int numSamples) {
-    if (!initialized_ || buffer == nullptr || numSamples <= 0) {
+    if (!buffer || numSamples <= 0) {
         return;
     }
-    
-    // Clear the buffer first
-    for (int i = 0; i < numSamples; ++i) {
-        buffer[i] = 0.0f;
+    std::fill(buffer, buffer + numSamples, 0.0f);
+    if (!initialized_) {
+        return;
     }
-    
-    // Mix all active voices into the buffer
+
     for (auto& voice : voices_) {
-        if (voice.isActive()) {
-            for (int i = 0; i < numSamples; ++i) {
-                buffer[i] += voice.renderSample();
-            }
+        for (int sample = 0; sample < numSamples && voice.isActive(); ++sample) {
+            buffer[sample] += voice.renderSample();
         }
     }
 }
 
 int VoiceAllocator::getNumActiveVoices() const {
-    int count = 0;
-    for (const auto& voice : voices_) {
-        if (voice.isActive()) {
-            count++;
-        }
-    }
-    return count;
+    return static_cast<int>(std::count_if(
+        voices_.begin(), voices_.end(), [](const Voice& voice) { return voice.isActive(); }));
 }
 
-void VoiceAllocator::setSampleRate(float sampleRate) {
-    sampleRate_ = sampleRate;
-    
-    // Update all voices with new sample rate
-    for (auto& voice : voices_) {
-        voice.setSampleRate(sampleRate);
+std::array<std::uint64_t, VoiceAllocator::kMaxVoices>
+VoiceAllocator::activeSampleLayerRevisions() const {
+    std::array<std::uint64_t, kMaxVoices> revisions {};
+    for (std::size_t index = 0; index < voices_.size(); ++index) {
+        revisions[index] = voices_[index].getActiveSampleLayerRevision();
     }
-}
-
-void VoiceAllocator::setPitchTrackingEnabled(bool enabled) {
-    // Update all voices with pitch tracking state
-    for (auto& voice : voices_) {
-        voice.setPitchTrackingEnabled(enabled);
-    }
+    return revisions;
 }
 
 Voice* VoiceAllocator::findIdleVoice() {
-    // Find the first inactive voice
-    for (auto& voice : voices_) {
-        if (!voice.isActive()) {
-            return &voice;
-        }
-    }
-    return nullptr;
+    const auto found = std::find_if(
+        voices_.begin(), voices_.end(), [](const Voice& voice) { return !voice.isActive(); });
+    return found == voices_.end() ? nullptr : &*found;
 }
 
 Voice* VoiceAllocator::findOldestVoice() {
-    // Find the voice with the highest age (oldest)
-    // If all voices have the same age, return the first one
-    Voice* oldestVoice = &voices_[0];  // Start with first voice
-    uint64_t maxAge = voices_[0].getAge();
-    
-    for (size_t i = 1; i < voices_.size(); ++i) {
-        if (voices_[i].getAge() > maxAge) {
-            maxAge = voices_[i].getAge();
-            oldestVoice = &voices_[i];
-        }
-    }
-    
-    return oldestVoice;
-}
-
-Voice* VoiceAllocator::findVoiceByNote(int note) {
-    // Find the first voice playing this note
-    // If multiple voices are playing the same note, return the oldest one
-    Voice* foundVoice = nullptr;
-    uint64_t maxAge = 0;
-    
-    for (auto& voice : voices_) {
-        if (voice.isActive() && voice.getNote() == note) {
-            if (voice.getAge() > maxAge) {
-                maxAge = voice.getAge();
-                foundVoice = &voice;
-            }
-        }
-    }
-    
-    return foundVoice;
+    return &*std::max_element(voices_.begin(), voices_.end(),
+                              [](const Voice& left, const Voice& right) {
+                                  return left.getAge() < right.getAge();
+                              });
 }
 
 } // namespace KickDrum

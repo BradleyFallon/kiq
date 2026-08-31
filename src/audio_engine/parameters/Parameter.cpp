@@ -14,11 +14,11 @@ Parameter::Parameter(
 )
     : id_(id)
     , name_(name)
+    , value_(defaultValue)
     , defaultValue_(defaultValue)
     , minValue_(minValue)
     , maxValue_(maxValue)
     , unit_(unit)
-    , value_(defaultValue)
 {
     // Ensure min <= max
     if (minValue_ > maxValue_) {
@@ -33,11 +33,11 @@ Parameter::Parameter(
 Parameter::Parameter()
     : id_("")
     , name_("")
+    , value_(0.0f)
     , defaultValue_(0.0f)
     , minValue_(0.0f)
     , maxValue_(1.0f)
     , unit_("")
-    , value_(0.0f)
 {
 }
 

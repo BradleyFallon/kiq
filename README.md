@@ -1,213 +1,149 @@
-# Kick Drum Synthesizer
+# Kiq
 
-A professional kick drum synthesizer available as both a VST3 plugin and standalone macOS application. Features a three-generator synthesis engine with ring modulation, dual-phase envelope system, and real-time waveform visualization.
+Kiq is a small kick-drum synthesizer with a shared C++17 DSP engine, a raw
+VST3 wrapper, and a native macOS app. The plugin and standalone targets share
+the same VSTGUI editor.
 
-## Features
+The current synthesis model is a compact, physically informed kick model:
 
-- **Three-Generator Synthesis**: Sine Driver, Harmonic Membrane, and Noise Generator
-- **Ring Modulation**: Complex harmonic content generation
-- **Dual-Phase Envelope System**: Warm-Up Phase and Transient/Decay Phase
-- **Master Effects**: Compressor and Reverb
-- **Real-Time Waveform Visualization**: See your sound as you design it
-- **Preset Management**: Save and recall your favorite kick drum sounds
-- **Low-Latency Audio Processing**: Professional-grade performance
-- **VST3 Plugin**: Use in your favorite DAW
-- **Standalone Application**: Run without a DAW on macOS
+```text
+absolute-Hz tension + dB energy + strike + phase ── 3-mode membrane ─┐
+trigger + beater controls ───────────────────────── impact + air ───┼─ mix
+imported/preset audio ───────────────────────── optional sample ────┘
 
-## Requirements
+mix ─ output gain ─ 3-band EQ ─ saturation ─ ceiling soft limiter
+```
 
-### Build Requirements
+The tension and energy-decay trajectories each have four points and one
+curvature value per segment. Tension is expressed as the membrane's
+fundamental frequency and interpolated in logarithmic frequency space. Strike
+position samples circular-membrane mode shapes from the center toward the rim,
+changing both body level and the excitation of two short-lived upper modes.
+The membrane, finite-contact impact, band-limited air burst, and optional
+resampled transient are independently levelled layers. Fundamental phase can
+be rotated directly or locked to a chosen point on the pitch trajectory.
+Every trigger resets the model and deterministic air-noise state, so the same
+settings, sample layer, and velocity produce the same samples.
 
-- CMake 3.20 or later
-- C++17 compatible compiler (Clang, GCC, or MSVC)
-- macOS 11.0 (Big Sur) or later (for standalone app)
-- VST3 SDK (for VST3 plugin)
+## Current status
 
-### Runtime Requirements
+- The graphical macOS CoreAudio/CoreMIDI standalone builds and runs.
+- The VST3 instrument builds, opens its custom editor, and passes Steinberg's
+  47 validator tests.
+- All 35 trajectory, layer, phase, and output parameters are editable from the
+  UI and automatable in a VST3 host. VST3 note and automation points retain
+  their sample offsets, with parameter changes applied before notes at the same
+  offset.
+- The editor shows a thin waveform line rendered through the complete audio
+  engine, plus a time-aligned tuning curve. Imported reference waveform and
+  pitch estimates are overlaid for comparison.
+- A dropped or selected WAV is downmixed and analyzed for a likely kick,
+  auto-fits the physical model, and supplies an optional extracted transient
+  sample. **FIT** reapplies the model estimate and **ALIGN** applies its phase
+  estimate.
+- Seven factory presets, strict current-format `.kiqpreset` save/load with an
+  optional embedded sample, and bounded parameter undo/redo are available in
+  both editors.
+- Clicking **EXPORT / DRAG** saves the current hit as deterministic 48 kHz,
+  mono 24-bit PCM WAV; dragging it offers the same rendered file to hosts that
+  accept file drops.
+- HIT audition, a sample-accurate 40–240 BPM LOOP audition mode, and an output
+  peak/clip meter work in both targets. LOOP runs from the audio clock but is
+  not synchronized to DAW transport.
+- Old presets from the previous ADSR/ring-modulation engine are intentionally
+  unsupported.
 
-- macOS 11.0 or later
-- Audio interface (CoreAudio compatible)
-- MIDI controller (optional)
+## Build and test
 
-## Quick Start
+Requirements: CMake 3.25+, Xcode/Apple Clang, and the VST3 SDK (including its
+VSTGUI submodule) at `external/vst3sdk` for either graphical target.
 
-### Build the Standalone App
+Build the standalone and tests with the standard generator:
 
 ```bash
-./scripts/build/build_standalone.sh
+cmake -S . -B build -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON -DBUILD_TESTS=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+open build/bin/KickDrumSynthStandalone.app
 ```
 
-### Run the Standalone App
+Build and validate the VST3 using the Xcode generator:
 
 ```bash
-./scripts/run_standalone.sh
+cmake -G Xcode -S . -B cmake-build-vst3-xcode \
+  -DBUILD_VST3=ON -DBUILD_STANDALONE=ON -DBUILD_TESTS=OFF
+cmake --build cmake-build-vst3-xcode --config Release --target KickDrumSynth
 ```
 
-See [docs/STANDALONE_APP_GUIDE.md](docs/STANDALONE_APP_GUIDE.md) for usage instructions.
+The SDK's post-build step runs its validator and links the result into
+`~/Library/Audio/Plug-Ins/VST3/`.
 
-## Building
+## Editor controls
 
-See [docs/BUILDING.md](docs/BUILDING.md) for detailed build instructions.
+- Drag a numbered trajectory point vertically for value and horizontally for
+  time. Point 1 is fixed at 0 ms.
+- Drag the small dot on a segment to change its curvature.
+- Drag a knob vertically, use Shift for fine adjustment, use the mouse wheel,
+  or double-click to restore its default.
+- Use the **MODEL** page for membrane, impact, air, sample, strike, phase, air
+  decay, and beater controls. Use **OUTPUT** for low/mid/high EQ, saturation,
+  limiter ceiling, and final output gain.
+- Toggle **PHASE LOCK** above the tension graph, then drag its vertical marker
+  to choose when the fundamental must reach the phase set by the **PHASE**
+  knob.
+- Open **PRESET** for the factory set or `.kiqpreset` save/load. The arrow
+  buttons undo and redo parameter snapshots; Command-Z and
+  Shift-Command-Z work on macOS.
+- Click **IMPORT**, or drop a WAV anywhere on the editor, to analyze and match
+  a reference. The import also extracts a short transient into the optional
+  sample layer when possible. **FIT** and **ALIGN** can be reapplied after
+  further edits.
+- Click **HIT**, or press Space/Return while the editor has focus, to audition.
+- Click **LOOP** to repeat the current hit, then set its 40–240 BPM audition
+  tempo with the adjacent knob. The loop is not synchronized to host transport.
+- The response preview refreshes after parameter changes. It shows the current
+  post-output-stage waveform, time-aligned fundamental tuning, duration, peak
+  level, and any imported reference overlays.
+- Click **EXPORT / DRAG** to choose a WAV destination, or drag the button into
+  a DAW/file target that accepts file-path drops.
 
-### Quick Build
+Current limitations are deliberate and small-project oriented: reference
+matching is a deterministic heuristic rather than an exact inversion of the
+source; the imported sample is a short extracted transient, not full reference
+playback; imports are capped at 128 MiB encoded/12 million decoded frames; and
+editor undo tracks the 35 parameters, not sample replacement.
+Loading a preset file or reference therefore starts a fresh undo history;
+factory-preset changes remain undoable. MIDI note
+number does not transpose a hit, pitch bend and MIDI CC are not connected, and
+LOOP is not synchronized to host transport. The output limiter is a smooth
+ceiling-scaled clipper, not a look-ahead dynamics processor.
 
-```bash
-# Build everything
-./scripts/build/build.sh
+## Default hit
 
-# Build standalone app only
-./scripts/build/build_standalone.sh
-```
+| Path | Time | Value |
+|---|---:|---:|
+| Tension | 0 ms | 220 Hz |
+| Tension | 18 ms | 105 Hz |
+| Tension | 58 ms | 52 Hz |
+| Tension | 200 ms | 52 Hz |
+| Energy decay | 0 ms | -60 dB |
+| Energy decay | 0.5 ms | 0 dB |
+| Energy decay | 65 ms | -8 dB |
+| Energy decay | 220 ms | -60 dB |
 
-## Testing
+The transient combines a finite-contact, zero-area impact wavelet with a
+band-limited deterministic air burst whose default decay is 7 ms. Beater
+hardness controls both contact duration and air bandwidth. The optional sample
+layer is linearly resampled at its source rate and faded at its end. After the
+four layers mix, the engine applies output gain, fixed-split low/mid/high EQ,
+tanh saturation, and the ceiling-scaled soft limiter. MIDI note number does not
+retune the trajectory; velocity scales the hit, note-off leaves the one-shot
+running, and all-notes-off stops it. Physical parameters and sample choice are
+captured at trigger time so editing cannot zipper a ringing hit; output gain
+and the global output stage remain live through short smoothing ramps. A
+five-millisecond raised-cosine tail prevents a non-silent final energy point
+from ending abruptly.
 
-See [scripts/README.md](scripts/README.md) for all available test scripts.
-
-### Run All Tests
-
-```bash
-cd build
-ctest
-```
-
-### Run Specific Component Tests
-
-```bash
-./scripts/test/test_sine_driver_compile.sh
-./scripts/test/test_audio_engine_master.sh
-```
-
-## Installation
-
-### VST3 Plugin
-
-After building, the VST3 plugin will be installed to:
-- macOS: `~/Library/Audio/Plug-Ins/VST3/KickDrumSynth.vst3`
-
-Or manually install:
-```bash
-cd build
-cmake --install .
-```
-
-### Standalone Application
-
-After building, the standalone app will be in:
-- `build/bin/KickDrumSynthStandalone.app`
-
-Copy to Applications folder:
-```bash
-cp -r build/bin/KickDrumSynthStandalone.app /Applications/
-```
-
-## Usage
-
-### VST3 Plugin
-
-1. Open your DAW (Ableton Live, Logic Pro, etc.)
-2. Create a new instrument track
-3. Load "Kick Drum Synth" from your plugin list
-4. Play MIDI notes to trigger kick drum sounds
-5. Adjust parameters to design your sound
-
-### Standalone Application
-
-1. Launch "Kick Drum Synthesizer" from Applications
-2. Select your audio output device
-3. Select your MIDI input device (optional)
-4. Play MIDI notes or click the trigger button
-5. Adjust parameters to design your sound
-
-## Parameters
-
-### Generators
-- **Base Pitch**: Fundamental frequency (20Hz - 200Hz)
-- **Sine Level**: Sine driver output level
-- **Harmonic Ratio**: Harmonic frequency ratio (0.5x - 8.0x)
-- **Harmonic Level**: Harmonic output level
-- **Harmonic Mod Depth**: Ring modulation depth for harmonics
-- **Noise Level**: Noise output level
-- **Noise Mod Depth**: Ring modulation depth for noise
-
-### Envelopes
-- **Warm-Up Duration**: Pre-transient phase duration (0-100ms)
-- **Warm-Up Start Freq**: Starting frequency for warm-up sweep
-- **Warm-Up Amplitude**: Warm-up phase level
-- **Attack**: Attack time (0-1000ms)
-- **Decay**: Decay time (0-5000ms)
-- **Sustain**: Sustain level (0-100%)
-- **Release**: Release time (0-5000ms)
-- **Pitch Envelope Depth**: Pitch modulation amount (0-2000Hz)
-- **Envelope Curves**: Shape of each envelope segment
-
-### Effects
-- **Compressor**: Threshold, Ratio, Attack, Release, Mix
-- **Reverb**: Room Size, Decay Time, Damping, Mix
-
-### Master
-- **Master Level**: Final output level
-
-## Presets
-
-Presets are stored in JSON format with `.kdpreset` extension.
-
-### Factory Presets Location
-- macOS: `~/Library/Application Support/KickDrumSynth/Presets/Factory/`
-
-### User Presets Location
-- macOS: `~/Library/Application Support/KickDrumSynth/Presets/User/`
-
-## Documentation
-
-- [Building](docs/BUILDING.md) - Build instructions
-- [Standalone App Guide](docs/STANDALONE_APP_GUIDE.md) - Using the standalone app
-- [Project Structure](docs/PROJECT_STRUCTURE.md) - Codebase organization
-- [Contributing](docs/CONTRIBUTING.md) - Contribution guidelines
-- [Implementation Docs](docs/implementation/) - Component documentation
-- [Platform Integration](docs/) - CoreAudio and CoreMIDI docs
-
-## Development
-
-### Project Structure
-
-```
-kick-drum-synthesizer/
-├── src/
-│   ├── audio_engine/      # Core DSP and synthesis
-│   ├── ui/                # User interface
-│   ├── platform/          # Platform-specific code (CoreAudio, CoreMIDI)
-│   ├── vst3/              # VST3 plugin wrapper
-│   └── standalone/        # Standalone application
-├── tests/
-│   ├── unit/              # C++ unit tests (Google Test)
-│   ├── property/          # Property-based tests (fast-check)
-│   └── manual/            # Manual integration tests
-├── scripts/
-│   ├── build/             # Build scripts
-│   ├── test/              # Test scripts
-│   └── run_*.sh           # Runtime scripts
-├── docs/                  # Documentation
-│   ├── implementation/    # Component docs
-│   └── checkpoints/       # Development milestones
-├── external/              # External dependencies (VST3 SDK)
-└── .kiro/specs/           # Formal specification
-```
-
-### Contributing
-
-See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
-
-## License
-
-[Your License Here]
-
-## Credits
-
-- VST is a trademark of Steinberg Media Technologies GmbH
-- Built with VST3 SDK
-- Uses Google Test for unit testing
-- Uses fast-check for property-based testing
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on GitHub.
+See [the core architecture](docs/implementation/TRAJECTORY_DRIVEN_CORE.md),
+[building notes](docs/BUILDING.md), and the
+[standalone guide](docs/STANDALONE_APP_GUIDE.md).

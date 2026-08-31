@@ -7,6 +7,7 @@
 #include <memory>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace KickDrum {
 
@@ -139,6 +140,7 @@ private:
     // State
     bool initialized_;
     bool running_;
+    std::vector<float> interleavedBuffer_;
 
     // Internal initialization helpers
     bool createAudioUnit();

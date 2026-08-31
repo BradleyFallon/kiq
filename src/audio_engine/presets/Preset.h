@@ -22,8 +22,8 @@ namespace KickDrum {
  *   "name": "Deep Sub Kick",
  *   "version": "1.0.0",
  *   "parameters": {
- *     "basePitch": 50.0,
- *     "sineLevel": 0.8,
+ *     "pitch0Hz": 220.0,
+ *     "outputGain": 0.8,
  *     ...
  *   }
  * }

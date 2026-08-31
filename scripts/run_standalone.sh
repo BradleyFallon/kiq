@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Run script for Kick Drum Synthesizer Standalone App
+# Run script for the Kiq standalone app
 
 APP_PATH="build/bin/KickDrumSynthStandalone.app/Contents/MacOS/KickDrumSynthStandalone"
 
@@ -9,7 +9,7 @@ if [ ! -f "$APP_PATH" ]; then
     ./scripts/build/build_standalone.sh
 fi
 
-echo "=== Running Kick Drum Synthesizer ==="
+echo "=== Running Kiq ==="
 echo ""
 
 "$APP_PATH"

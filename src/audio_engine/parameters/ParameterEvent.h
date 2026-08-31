@@ -17,7 +17,7 @@ namespace KickDrum {
  */
 struct ParameterEvent {
     /**
-     * @brief Parameter ID (e.g., "basePitch", "sineLevel")
+     * @brief Parameter ID (e.g., "pitch0Hz", "outputGain")
      */
     std::string parameterId;
     
@@ -33,6 +33,9 @@ struct ParameterEvent {
      * the parameter change will be applied starting at sample 256.
      */
     uint32_t sampleOffset;
+
+    /** Producer order assigned by ParameterEventQueue. */
+    std::uint64_t order;
     
     /**
      * @brief Construct a parameter event
@@ -45,6 +48,7 @@ struct ParameterEvent {
         : parameterId(id)
         , value(val)
         , sampleOffset(offset)
+        , order(0)
     {
     }
     
@@ -55,6 +59,7 @@ struct ParameterEvent {
         : parameterId("")
         , value(0.0f)
         , sampleOffset(0)
+        , order(0)
     {
     }
     
@@ -62,7 +67,8 @@ struct ParameterEvent {
      * @brief Compare events by sample offset (for sorting)
      */
     bool operator<(const ParameterEvent& other) const {
-        return sampleOffset < other.sampleOffset;
+        return sampleOffset < other.sampleOffset ||
+               (sampleOffset == other.sampleOffset && order < other.order);
     }
 };
 

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "KiqUIBridge.h"
+#include "SampleLayerData.h"
 #include "public.sdk/source/vst/vsteditcontroller.h"
+#include "vstgui/plugin-bindings/vst3editor.h"
 
 namespace Steinberg {
 namespace Vst {
@@ -14,7 +17,9 @@ namespace Vst {
  * - UI creation and updates
  * - Communication with the processor
  */
-class KickSynthController : public EditController
+class KickSynthController : public EditController,
+                            public VSTGUI::VST3EditorDelegate,
+                            public KickDrum::UI::KiqUIBridge
 {
 public:
     KickSynthController();
@@ -34,9 +39,30 @@ public:
     //--- IEditController overrides --------
     IPlugView* PLUGIN_API createView(FIDString name) SMTG_OVERRIDE;
 
+    //--- VSTGUI::VST3EditorDelegate --------
+    VSTGUI::CView* createCustomView(
+        VSTGUI::UTF8StringPtr name,
+        const VSTGUI::UIAttributes& attributes,
+        const VSTGUI::IUIDescription* description,
+        VSTGUI::VST3Editor* editor) override;
+
+    //--- KickDrum::UI::KiqUIBridge --------
+    float getParameter(KickDrum::KickParameterId id) override;
+    void beginParameterEdit(KickDrum::KickParameterId id) override;
+    void performParameterEdit(KickDrum::KickParameterId id, float plainValue) override;
+    void endParameterEdit(KickDrum::KickParameterId id) override;
+    void triggerAudition() override;
+    void setAuditionLoop(bool enabled, float bpm) override;
+    void setSampleLayer(
+        std::shared_ptr<const KickDrum::SampleLayerData> sampleLayer) override;
+    std::shared_ptr<const KickDrum::SampleLayerData> getSampleLayer() const override;
+    float getOutputPeak() override;
+    bool getOutputClip() override;
+
 private:
     // Helper to register all parameters
     void registerParameters();
+    std::shared_ptr<const KickDrum::SampleLayerData> sampleLayer_;
 };
 
 //------------------------------------------------------------------------

@@ -9,16 +9,15 @@ namespace DSPUtils {
 /**
  * @brief Apply soft clipping to prevent hard clipping at ±1.0
  * 
- * Uses a cubic soft clipping algorithm that smoothly limits the signal
- * to the range [-1.0, 1.0] without harsh distortion.
+ * Uses a unity-gain linear region and a continuous tanh shoulder that
+ * approaches the range [-1.0, 1.0] without a hard discontinuity.
  * 
  * @param input Input sample value
  * @return Soft-clipped output value in range [-1.0, 1.0]
  * 
  * Algorithm:
- * - For |x| < 2/3: output = x
- * - For 2/3 <= |x| < 1: output = (3 - (2-3x)^2) / 3 * sign(x)
- * - For |x| >= 1: output = sign(x)
+ * - For |x| <= 2/3: output = x
+ * - Above 2/3: the magnitude approaches 1 through a monotonic tanh shoulder
  */
 float softClip(float input);
 

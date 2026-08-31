@@ -1,552 +1,707 @@
 #include <gtest/gtest.h>
+
 #include "audio_engine/include/AudioEngine.h"
+#include "audio_engine/parameters/ParameterEventQueue.h"
 #include "audio_engine/parameters/ParameterManager.h"
-#include "audio_engine/effects/EffectsChain.h"
 #include "audio_engine/voice/VoiceAllocator.h"
-#include <vector>
+
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <thread>
+#include <vector>
 
 using namespace KickDrum;
 
-class AudioEngineTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        engine = std::make_unique<AudioEngine>();
+TEST(AudioEngineTest, DefaultHitProducesFiniteDeterministicStereo) {
+    auto render = [] {
+        AudioEngine engine;
+        engine.initialize(48000.0f);
+        engine.noteOn(36, 1.0f);
+        std::vector<float> buffer(12000 * 2);
+        engine.processBlock(buffer.data(), 12000, 2);
+        return buffer;
+    };
+
+    const auto first = render();
+    const auto second = render();
+    EXPECT_EQ(first, second);
+    EXPECT_TRUE(std::any_of(first.begin(), first.end(),
+                            [](float sample) { return sample != 0.0f; }));
+    for (std::size_t sample = 0; sample < first.size() / 2; ++sample) {
+        EXPECT_FLOAT_EQ(first[sample * 2], first[sample * 2 + 1]);
+        EXPECT_TRUE(std::isfinite(first[sample * 2]));
+    }
+}
+
+TEST(AudioEngineTest, DefaultHitDoesNotReachFullScale) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.noteOn(36, 1.0f);
+    std::vector<float> buffer(12000);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    const auto peak = *std::max_element(
+        buffer.begin(), buffer.end(),
+        [](float left, float right) { return std::abs(left) < std::abs(right); });
+    EXPECT_LT(std::abs(peak), 0.99f);
+}
+
+TEST(AudioEngineTest, QueuedParametersApplyBeforeQueuedAudition) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.getParameterEventQueue()->addEvent("outputGain", 0.0f, 0);
+    engine.enqueueNoteOn(36, 1.0f);
+    std::vector<float> buffer(512);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample == 0.0f; }));
+}
+
+TEST(AudioEngineTest, ParametersUpdateAuthoritativeVoiceModel) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("pitch0Hz", 330.0f);
+    engine.setParameter("outputGain", 0.5f);
+
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("pitch0Hz"),
+                    330.0f);
+    EXPECT_FLOAT_EQ(engine.getVoiceAllocator()->getParams().pitch[0].value, 330.0f);
+    EXPECT_FLOAT_EQ(engine.getOutputGain(), 0.5f);
+}
+
+TEST(AudioEngineTest, ReinitializingAtANewSampleRatePreservesParameters) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("pitch2Hz", 61.0f);
+    engine.initialize(96000.0f);
+
+    EXPECT_FLOAT_EQ(engine.getSampleRate(), 96000.0f);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("pitch2Hz"),
+                    61.0f);
+    EXPECT_FLOAT_EQ(engine.getVoiceAllocator()->getParams().pitch[2].value, 61.0f);
+}
+
+TEST(AudioEngineTest, QueuedControlStateSurvivesReinitialization) {
+    AudioEngine engine;
+    engine.initialize(44100.0f);
+    engine.getParameterEventQueue()->addEvent("pitch0Hz", 440.0f, 0);
+
+    engine.initialize(48000.0f);
+    std::vector<float> block(1);
+    engine.processBlock(block.data(), block.size(), 1);
+
+    EXPECT_FLOAT_EQ(
+        engine.getParameterManager()->getParameterValue("pitch0Hz"), 440.0f);
+}
+
+TEST(AudioEngineTest, CompleteStateSnapshotCrossesOneBoundaryBeforeItsNote) {
+    AudioEngine engine;
+    engine.initialize(44100.0f);
+    engine.setSoftClippingEnabled(false);
+
+    KickParams restored = kDefaultKickParams;
+    restored.pitch[0].value = 330.0f;
+    restored.membraneLevel = 0.0f;
+    restored.transient.impactLevel = 0.0f;
+    restored.transient.airLevel = 0.0f;
+    restored.sampleLevel = 1.0f;
+    restored.outputGain = 1.0f;
+    auto layer = std::make_shared<SampleLayerData>();
+    layer->sourceSampleRate = 48000.0f;
+    layer->samples.assign(32, -0.25f);
+
+    const std::uint64_t revision =
+        engine.setStateSnapshot(restored, std::move(layer));
+    EXPECT_GT(revision, 0u);
+    EXPECT_LT(engine.getAppliedStateRevision(), revision);
+
+    // Hosts may restore state before their final setupProcessing/setActive.
+    engine.initialize(48000.0f);
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 0));
+    std::vector<float> block(8);
+    engine.processBlock(block.data(), block.size(), 1);
+
+    EXPECT_EQ(engine.getAppliedStateRevision(), revision);
+    EXPECT_FLOAT_EQ(engine.getParams().pitch[0].value, 330.0f);
+    EXPECT_FLOAT_EQ(engine.getParams().sampleLevel, 1.0f);
+    EXPECT_LT(block.front(), 0.0f);
+}
+
+TEST(AudioEngineTest, OutputGainZeroSilencesHit) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setOutputGain(0.0f);
+    engine.noteOn(36, 1.0f);
+    std::vector<float> buffer(512);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample == 0.0f; }));
+}
+
+TEST(AudioEngineTest, QueuedNoteAndMeterCrossTheAudioThreadBoundary) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.prepare(512);
+    engine.enqueueNoteOn(36, 1.0f);
+
+    std::vector<float> buffer(512);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    EXPECT_TRUE(std::any_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample != 0.0f; }));
+    EXPECT_GT(engine.getOutputPeak(), 0.0f);
+    EXPECT_FLOAT_EQ(engine.getOutputPeak(), 0.0f);
+}
+
+TEST(AudioEngineTest, ClipTelemetryReportsPreLimiterOverload) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("amp1Db", 6.0f);
+    engine.setParameter("impactLevel", 1.0f);
+    engine.setParameter("airLevel", 1.0f);
+    engine.setOutputGain(1.0f);
+    engine.noteOn(36, 1.0f);
+
+    std::vector<float> buffer(2048);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    EXPECT_TRUE(engine.getOutputClip());
+    EXPECT_FALSE(engine.getOutputClip());
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(), [](float sample) {
+        return std::abs(sample) < 1.0f;
+    }));
+}
+
+TEST(AudioEngineTest, AuditionLoopRetriggersAtExactSampleIntervals) {
+    constexpr std::size_t intervalSamples = 12000;
+    constexpr std::size_t renderSamples = intervalSamples * 2 + 512;
+
+    AudioEngine referenceEngine;
+    referenceEngine.initialize(48000.0f);
+    referenceEngine.setSoftClippingEnabled(false);
+    referenceEngine.noteOn(36, 1.0f);
+    std::vector<float> reference(renderSamples);
+    referenceEngine.processBlock(reference.data(), reference.size(), 1);
+
+    AudioEngine loopEngine;
+    loopEngine.initialize(48000.0f);
+    loopEngine.setSoftClippingEnabled(false);
+    loopEngine.setAuditionLoop(true, 240.0f);
+    std::vector<float> looped(renderSamples);
+    loopEngine.processBlock(looped.data(), looped.size(), 1);
+
+    for (std::size_t sample = 0; sample < renderSamples; ++sample) {
+        float expected = reference[sample];
+        if (sample >= intervalSamples) {
+            expected += reference[sample - intervalSamples];
+        }
+        if (sample >= intervalSamples * 2) {
+            expected += reference[sample - intervalSamples * 2];
+        }
+        EXPECT_NEAR(looped[sample], expected, 1.0e-6f) << "sample " << sample;
+    }
+}
+
+TEST(AudioEngineTest, DisablingAuditionLoopStopsFutureRetriggers) {
+    constexpr std::size_t firstBlockSamples = 512;
+    constexpr std::size_t secondBlockSamples = 30000;
+
+    auto render = [](bool disableLoop) {
+        AudioEngine engine;
+        engine.initialize(48000.0f);
+        engine.setSoftClippingEnabled(false);
+        if (disableLoop) {
+            engine.setAuditionLoop(true, 240.0f);
+        } else {
+            engine.noteOn(36, 1.0f);
+        }
+
+        std::vector<float> rendered(firstBlockSamples + secondBlockSamples);
+        engine.processBlock(rendered.data(), firstBlockSamples, 1);
+        if (disableLoop) {
+            engine.setAuditionLoop(false, 240.0f);
+        }
+        engine.processBlock(rendered.data() + firstBlockSamples,
+                            secondBlockSamples, 1);
+        return rendered;
+    };
+
+    EXPECT_EQ(render(true), render(false));
+}
+
+TEST(AudioEngineTest, SampleAccurateEventChangesFollowingSamples) {
+    auto makeEngine = [] {
+        auto engine = std::make_unique<AudioEngine>();
         engine->initialize(48000.0f);
-    }
+        engine->setSoftClippingEnabled(false);
+        engine->noteOn(36, 1.0f);
+        return engine;
+    };
 
-    void TearDown() override {
-        engine.reset();
-    }
+    auto referenceEngine = makeEngine();
+    std::vector<float> reference(512);
+    referenceEngine->processBlock(reference.data(), reference.size(), 1);
 
-    std::unique_ptr<AudioEngine> engine;
-};
+    auto engine = makeEngine();
+    engine->getParameterEventQueue()->addEvent("outputGain", 0.0f, 128);
+    std::vector<float> buffer(512);
+    engine->processBlock(buffer.data(), buffer.size(), 1);
 
-// ============================================================================
-// Master Level Control Tests
-// ============================================================================
-
-TEST_F(AudioEngineTest, MasterLevelDefaultValue) {
-    // Default master level should be 0.8
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 0.8f);
+    EXPECT_TRUE(std::equal(buffer.begin(), buffer.begin() + 128,
+                           reference.begin()));
+    EXPECT_LT(std::abs(buffer[128]), std::abs(reference[128]));
+    EXPECT_TRUE(std::any_of(buffer.begin() + 128, buffer.begin() + 367,
+                            [](float sample) { return sample != 0.0f; }));
+    EXPECT_TRUE(std::all_of(buffer.begin() + 367, buffer.end(),
+                            [](float sample) { return sample == 0.0f; }));
 }
 
-TEST_F(AudioEngineTest, SetMasterLevelUpdatesValue) {
-    engine->setMasterLevel(0.5f);
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 0.5f);
-    
-    engine->setMasterLevel(1.0f);
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 1.0f);
-    
-    engine->setMasterLevel(0.0f);
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 0.0f);
+TEST(AudioEngineTest, NoteOffDoesNotCutHitAndAllNotesOffDoes) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.noteOn(36, 1.0f);
+    engine.noteOff(36);
+    EXPECT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 1);
+    engine.allNotesOff();
+    EXPECT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 0);
 }
 
-TEST_F(AudioEngineTest, MasterLevelClampsToValidRange) {
-    // Test clamping above 1.0
-    engine->setMasterLevel(2.0f);
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 1.0f);
-    
-    // Test clamping below 0.0
-    engine->setMasterLevel(-0.5f);
-    EXPECT_FLOAT_EQ(engine->getMasterLevel(), 0.0f);
+TEST(AudioEngineTest, InvalidCallsAreHarmless) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.processBlock(nullptr, 100, 2);
+    std::vector<float> buffer(10, 42.0f);
+    engine.processBlock(buffer.data(), 0, 2);
+    engine.processBlock(buffer.data(), 5, 0);
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample == 42.0f; }));
 }
 
-TEST_F(AudioEngineTest, MasterLevelAffectsOutput) {
-    // Trigger a note to generate audio
-    engine->noteOn(60, 0.8f);
-    
-    // Process with full master level
-    std::vector<float> buffer1(512, 0.0f);
-    engine->setMasterLevel(1.0f);
-    engine->processBlock(buffer1.data(), 512, 1);
-    
-    // Calculate RMS of output
-    float rms1 = 0.0f;
-    for (float sample : buffer1) {
-        rms1 += sample * sample;
-    }
-    rms1 = std::sqrt(rms1 / buffer1.size());
-    
-    // Reset and process with half master level
-    engine->allNotesOff();
-    engine->noteOn(60, 0.8f);
-    
-    std::vector<float> buffer2(512, 0.0f);
-    engine->setMasterLevel(0.5f);
-    engine->processBlock(buffer2.data(), 512, 1);
-    
-    // Calculate RMS of output
-    float rms2 = 0.0f;
-    for (float sample : buffer2) {
-        rms2 += sample * sample;
-    }
-    rms2 = std::sqrt(rms2 / buffer2.size());
-    
-    // RMS with 0.5 level should be approximately half of RMS with 1.0 level
-    // (allowing for some tolerance due to envelope differences)
-    if (rms1 > 0.0f) {
-        EXPECT_LT(rms2, rms1);
-        EXPECT_NEAR(rms2 / rms1, 0.5f, 0.2f);
+TEST(AudioEngineTest, SampleLayerIsStagedSanitizedAndResampled) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+    engine.setParameter("membraneLevel", 0.0f);
+    engine.setParameter("impactLevel", 0.0f);
+    engine.setParameter("airLevel", 0.0f);
+    engine.setParameter("sampleLevel", 1.0f);
+    engine.setOutputGain(1.0f);
+
+    auto sampleLayer = std::make_shared<SampleLayerData>();
+    sampleLayer->sourceSampleRate = 24000.0f;
+    sampleLayer->samples.assign(480, 0.25f);
+    sampleLayer->samples[0] = std::numeric_limits<float>::quiet_NaN();
+    engine.setSampleLayer(sampleLayer);
+    const auto installed = engine.getSampleLayer();
+    ASSERT_NE(installed, nullptr);
+    EXPECT_FLOAT_EQ(installed->sourceSampleRate, 24000.0f);
+    EXPECT_FLOAT_EQ(installed->samples[0], 0.0f);
+    engine.enqueueNoteOn(36, 1.0f);
+
+    std::vector<float> buffer(8);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    EXPECT_FLOAT_EQ(buffer[0], 0.0f);
+    EXPECT_FLOAT_EQ(buffer[1], 0.125f);
+    for (std::size_t sample = 2; sample < buffer.size(); ++sample) {
+        EXPECT_FLOAT_EQ(buffer[sample], 0.25f);
     }
 }
 
-TEST_F(AudioEngineTest, MasterLevelZeroSilencesOutput) {
-    // Trigger a note
-    engine->noteOn(60, 0.8f);
-    
-    // Set master level to zero
-    engine->setMasterLevel(0.0f);
-    
-    // Process audio
-    std::vector<float> buffer(512, 0.0f);
-    engine->processBlock(buffer.data(), 512, 1);
-    
-    // All samples should be zero
-    for (float sample : buffer) {
-        EXPECT_FLOAT_EQ(sample, 0.0f);
+TEST(AudioEngineTest, ClearingSampleLayerAffectsFutureHitsOnly) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+    engine.setParameter("membraneLevel", 0.0f);
+    engine.setParameter("impactLevel", 0.0f);
+    engine.setParameter("airLevel", 0.0f);
+    engine.setParameter("sampleLevel", 1.0f);
+    engine.setOutputGain(1.0f);
+
+    auto sampleLayer = std::make_shared<SampleLayerData>();
+    sampleLayer->sourceSampleRate = 48000.0f;
+    sampleLayer->samples.assign(480, 0.25f);
+    engine.setSampleLayer(sampleLayer);
+    engine.noteOn(36, 1.0f);
+    engine.clearSampleLayer();
+    EXPECT_EQ(engine.getSampleLayer(), nullptr);
+    engine.noteOn(37, 1.0f);
+
+    std::vector<float> buffer(8);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    for (const float sample : buffer) {
+        EXPECT_FLOAT_EQ(sample, 0.25f);
     }
 }
 
-// ============================================================================
-// Soft Clipping Tests
-// ============================================================================
+TEST(AudioEngineTest, RetiredSampleLayersLiveThroughActiveHitsThenRelease) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("sampleLevel", 1.0f);
 
-TEST_F(AudioEngineTest, SoftClippingEnabledByDefault) {
-    EXPECT_TRUE(engine->isSoftClippingEnabled());
+    auto first = std::make_shared<SampleLayerData>();
+    first->sourceSampleRate = 48000.0f;
+    first->samples.assign(480, 0.25f);
+    engine.setSampleLayer(first);
+    engine.noteOn(36, 1.0f);
+    auto installedFirst = engine.getSampleLayer();
+    std::weak_ptr<const SampleLayerData> retired = installedFirst;
+    installedFirst.reset();
+
+    auto second = std::make_shared<SampleLayerData>();
+    second->sourceSampleRate = 48000.0f;
+    second->samples.assign(480, -0.25f);
+    engine.setSampleLayer(second);
+    std::vector<float> shortBlock(64);
+    engine.processBlock(shortBlock.data(), shortBlock.size(), 1);
+    EXPECT_FALSE(retired.expired());
+
+    std::vector<float> remainder(12000);
+    engine.processBlock(remainder.data(), remainder.size(), 1);
+    (void)engine.getSampleLayer(); // control-thread reclamation point
+    EXPECT_TRUE(retired.expired());
 }
 
-TEST_F(AudioEngineTest, SetSoftClippingEnabled) {
-    engine->setSoftClippingEnabled(false);
-    EXPECT_FALSE(engine->isSoftClippingEnabled());
-    
-    engine->setSoftClippingEnabled(true);
-    EXPECT_TRUE(engine->isSoftClippingEnabled());
-}
+TEST(AudioEngineTest, IntermediateSampleRevisionsDoNotAccumulateBehindAnActiveHit) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("sampleLevel", 1.0f);
 
-TEST_F(AudioEngineTest, SoftClippingLimitsOutput) {
-    // Enable soft clipping
-    engine->setSoftClippingEnabled(true);
-    
-    // Set master level very high to potentially cause clipping
-    engine->setMasterLevel(1.0f);
-    
-    // Trigger multiple notes to create loud output
-    for (int note = 60; note < 68; ++note) {
-        engine->noteOn(note, 1.0f);
-    }
-    
-    // Process audio
-    std::vector<float> buffer(1024, 0.0f);
-    engine->processBlock(buffer.data(), 1024, 1);
-    
-    // All samples should be within [-1.0, 1.0]
-    for (size_t i = 0; i < buffer.size(); ++i) {
-        EXPECT_GE(buffer[i], -1.0f) << "Sample " << i << " below -1.0";
-        EXPECT_LE(buffer[i], 1.0f) << "Sample " << i << " above 1.0";
-    }
-}
+    auto first = std::make_shared<SampleLayerData>();
+    first->sourceSampleRate = 48000.0f;
+    first->samples.assign(480, 0.25f);
+    engine.setSampleLayer(first);
+    engine.noteOn(36, 1.0f);
 
-TEST_F(AudioEngineTest, OutputAlwaysFiniteWithSoftClipping) {
-    // Enable soft clipping
-    engine->setSoftClippingEnabled(true);
-    
-    // Trigger notes
-    engine->noteOn(60, 1.0f);
-    
-    // Process multiple blocks
-    for (int block = 0; block < 10; ++block) {
-        std::vector<float> buffer(512, 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
-        
-        // All samples should be finite
-        for (size_t i = 0; i < buffer.size(); ++i) {
-            EXPECT_TRUE(std::isfinite(buffer[i])) 
-                << "Non-finite sample at block " << block << ", index " << i;
+    std::vector<std::weak_ptr<const SampleLayerData>> intermediate;
+    for (int revision = 0; revision < 16; ++revision) {
+        auto layer = std::make_shared<SampleLayerData>();
+        layer->sourceSampleRate = 48000.0f;
+        layer->samples.assign(480, static_cast<float>(revision) / 32.0f);
+        engine.setSampleLayer(layer);
+        if (revision < 15) {
+            auto installed = engine.getSampleLayer();
+            intermediate.emplace_back(installed);
         }
     }
+
+    std::vector<float> block(1);
+    engine.processBlock(block.data(), block.size(), 1);
+    (void)engine.getSampleLayer();
+    for (const auto& retired : intermediate) {
+        EXPECT_TRUE(retired.expired());
+    }
 }
 
-// ============================================================================
-// NaN/Infinity Detection Tests
-// ============================================================================
+TEST(AudioEngineTest, ReplacedSamplesCanRetireBeforeTheFirstAudioCallback) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
 
-TEST_F(AudioEngineTest, NaNDetectionEnabledByDefault) {
-    EXPECT_TRUE(engine->isNaNDetectionEnabled());
-}
-
-TEST_F(AudioEngineTest, SetNaNDetectionEnabled) {
-    engine->setNaNDetectionEnabled(false);
-    EXPECT_FALSE(engine->isNaNDetectionEnabled());
-    
-    engine->setNaNDetectionEnabled(true);
-    EXPECT_TRUE(engine->isNaNDetectionEnabled());
-}
-
-TEST_F(AudioEngineTest, NormalOperationProducesValidOutput) {
-    // Enable NaN detection
-    engine->setNaNDetectionEnabled(true);
-    
-    // Trigger a note
-    engine->noteOn(60, 0.8f);
-    
-    // Process multiple blocks
-    for (int block = 0; block < 10; ++block) {
-        std::vector<float> buffer(512, 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
-        
-        // All samples should be valid (not NaN or infinity)
-        for (size_t i = 0; i < buffer.size(); ++i) {
-            EXPECT_FALSE(std::isnan(buffer[i])) 
-                << "NaN at block " << block << ", index " << i;
-            EXPECT_FALSE(std::isinf(buffer[i])) 
-                << "Infinity at block " << block << ", index " << i;
+    std::vector<std::weak_ptr<const SampleLayerData>> retired;
+    for (int revision = 0; revision < 16; ++revision) {
+        auto layer = std::make_shared<SampleLayerData>();
+        layer->sourceSampleRate = 48000.0f;
+        layer->samples.assign(64, static_cast<float>(revision) / 32.0f);
+        engine.setSampleLayer(layer);
+        if (revision < 15) {
+            retired.emplace_back(engine.getSampleLayer());
         }
     }
+    (void)engine.getSampleLayer();
+    for (const auto& replaced : retired) {
+        EXPECT_TRUE(replaced.expired());
+    }
 }
 
-// ============================================================================
-// Multi-Channel Output Tests
-// ============================================================================
+TEST(AudioEngineTest, SampleLayerHandoffSurvivesConcurrentReplacement) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.prepare(32);
+    engine.setParameter("sampleLevel", 1.0f);
 
-TEST_F(AudioEngineTest, MonoOutputWorks) {
-    engine->noteOn(60, 0.8f);
-    
-    std::vector<float> buffer(512, 0.0f);
-    engine->processBlock(buffer.data(), 512, 1);
-    
-    // Should produce non-zero output
-    bool hasNonZero = false;
-    for (float sample : buffer) {
-        if (sample != 0.0f) {
-            hasNonZero = true;
-            break;
+    std::atomic<bool> start {false};
+    std::thread audio([&] {
+        std::vector<float> block(32);
+        while (!start.load(std::memory_order_acquire)) {
         }
-    }
-    EXPECT_TRUE(hasNonZero);
-}
-
-TEST_F(AudioEngineTest, StereoOutputDuplicatesMono) {
-    engine->noteOn(60, 0.8f);
-    
-    std::vector<float> buffer(512 * 2, 0.0f);  // Stereo interleaved
-    engine->processBlock(buffer.data(), 512, 2);
-    
-    // Left and right channels should be identical
-    for (size_t i = 0; i < 512; ++i) {
-        float left = buffer[i * 2];
-        float right = buffer[i * 2 + 1];
-        EXPECT_FLOAT_EQ(left, right) << "Mismatch at sample " << i;
-    }
-}
-
-TEST_F(AudioEngineTest, MultiChannelOutputWorks) {
-    engine->noteOn(60, 0.8f);
-    
-    const size_t numChannels = 4;
-    std::vector<float> buffer(512 * numChannels, 0.0f);
-    engine->processBlock(buffer.data(), 512, numChannels);
-    
-    // All channels should be identical
-    for (size_t i = 0; i < 512; ++i) {
-        float firstChannel = buffer[i * numChannels];
-        for (size_t ch = 1; ch < numChannels; ++ch) {
-            EXPECT_FLOAT_EQ(buffer[i * numChannels + ch], firstChannel)
-                << "Mismatch at sample " << i << ", channel " << ch;
+        for (int iteration = 0; iteration < 1000; ++iteration) {
+            if (iteration % 25 == 0) {
+                engine.noteOn(36, 1.0f);
+            }
+            engine.processBlock(block.data(), block.size(), 1);
+            EXPECT_TRUE(std::all_of(block.begin(), block.end(), [](float sample) {
+                return std::isfinite(sample);
+            }));
         }
+    });
+
+    start.store(true, std::memory_order_release);
+    for (int revision = 0; revision < 1000; ++revision) {
+        auto layer = std::make_shared<SampleLayerData>();
+        layer->sourceSampleRate = 48000.0f;
+        layer->samples.assign(64, static_cast<float>(revision % 8) / 8.0f);
+        engine.setSampleLayer(std::move(layer));
+        (void)engine.getSampleLayer();
     }
+    audio.join();
+    EXPECT_NE(engine.getSampleLayer(), nullptr);
 }
 
-// ============================================================================
-// Integration Tests
-// ============================================================================
+TEST(AudioEngineTest, OutputEqSaturationAndLimiterAreEffective) {
+    auto render = [](float lowDb, float midDb, float highDb,
+                     float saturation, float ceilingDb) {
+        AudioEngine engine;
+        engine.initialize(48000.0f);
+        engine.setParameter("eqLowDb", lowDb);
+        engine.setParameter("eqMidDb", midDb);
+        engine.setParameter("eqHighDb", highDb);
+        engine.setParameter("saturation", saturation);
+        engine.setParameter("limiterCeilingDb", ceilingDb);
+        engine.noteOn(36, 1.0f);
+        std::vector<float> buffer(4096);
+        engine.processBlock(buffer.data(), buffer.size(), 1);
+        return buffer;
+    };
 
-TEST_F(AudioEngineTest, ProcessBlockHandlesNullBuffer) {
-    // Should not crash with null buffer
-    engine->processBlock(nullptr, 512, 1);
+    const auto neutral = render(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    EXPECT_NE(neutral, render(6.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+    EXPECT_NE(neutral, render(0.0f, 6.0f, 0.0f, 0.0f, 0.0f));
+    EXPECT_NE(neutral, render(0.0f, 0.0f, 6.0f, 0.0f, 0.0f));
+    EXPECT_NE(neutral, render(0.0f, 0.0f, 0.0f, 1.0f, 0.0f));
+
+    const auto limited = render(12.0f, 12.0f, 12.0f, 1.0f, -6.0f);
+    const float ceiling = std::pow(10.0f, -6.0f / 20.0f);
+    EXPECT_TRUE(std::all_of(limited.begin(), limited.end(), [ceiling](float sample) {
+        return std::isfinite(sample) && std::abs(sample) <= ceiling;
+    }));
 }
 
-TEST_F(AudioEngineTest, ProcessBlockHandlesZeroSamples) {
-    std::vector<float> buffer(512, 0.0f);
-    // Should not crash with zero samples
-    engine->processBlock(buffer.data(), 0, 1);
+TEST(AudioEngineTest, NonFiniteParametersFallBackToAuthoritativeDefaults) {
+    AudioEngine engine;
+    engine.initialize(std::numeric_limits<float>::infinity());
+    engine.setParameter("membraneLevel", std::numeric_limits<float>::quiet_NaN());
+    engine.setParameter("phaseDegrees", std::numeric_limits<float>::infinity());
+    engine.setParameter("eqLowDb", -std::numeric_limits<float>::infinity());
+    engine.setParameter("saturation", std::numeric_limits<float>::quiet_NaN());
+    engine.setParameter("limiterCeilingDb", std::numeric_limits<float>::infinity());
+
+    EXPECT_FLOAT_EQ(engine.getSampleRate(), 48000.0f);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("membraneLevel"),
+                    kDefaultKickParams.membraneLevel);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("phaseDegrees"),
+                    kDefaultKickParams.phaseDegrees);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("eqLowDb"),
+                    kDefaultKickParams.outputStage.eqLowDb);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("saturation"),
+                    kDefaultKickParams.outputStage.saturation);
+    EXPECT_FLOAT_EQ(
+        engine.getParameterManager()->getParameterValue("limiterCeilingDb"),
+        kDefaultKickParams.outputStage.limiterCeilingDb);
+
+    engine.noteOn(36, 1.0f);
+    std::vector<float> buffer(1024);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(), [](float sample) {
+        return std::isfinite(sample);
+    }));
 }
 
-TEST_F(AudioEngineTest, ProcessBlockHandlesZeroChannels) {
-    std::vector<float> buffer(512, 0.0f);
-    // Should not crash with zero channels
-    engine->processBlock(buffer.data(), 512, 0);
+TEST(AudioEngineTest, TypedNoteEventStartsAtExactSampleOffset) {
+    AudioEngine reference;
+    reference.initialize(48000.0f);
+    reference.setSoftClippingEnabled(false);
+    reference.noteOn(36, 1.0f);
+    std::vector<float> hit(512);
+    reference.processBlock(hit.data(), hit.size(), 1);
+
+    AudioEngine scheduled;
+    scheduled.initialize(48000.0f);
+    scheduled.setSoftClippingEnabled(false);
+    ASSERT_TRUE(scheduled.scheduleNoteOnEvent(36, 1.0f, 137));
+    std::vector<float> rendered(512);
+    scheduled.processBlock(rendered.data(), rendered.size(), 1);
+
+    EXPECT_TRUE(std::all_of(rendered.begin(), rendered.begin() + 137,
+                            [](float sample) { return sample == 0.0f; }));
+    EXPECT_TRUE(std::equal(rendered.begin() + 137, rendered.end(), hit.begin()));
 }
 
-TEST_F(AudioEngineTest, NoteOnAndOffWork) {
-    // Trigger a note
-    engine->noteOn(60, 0.8f);
-    
-    // Process some audio
-    std::vector<float> buffer1(512, 0.0f);
-    engine->processBlock(buffer1.data(), 512, 1);
-    
-    // Should have non-zero output
-    bool hasNonZero = false;
-    for (float sample : buffer1) {
-        if (sample != 0.0f) {
-            hasNonZero = true;
-            break;
-        }
+TEST(AudioEngineTest, TypedParametersApplyBeforeNotesAtTheSameOffset) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+
+    // Schedule the note first to prove event type, not arrival order, controls
+    // precedence at a shared sample position.
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 73));
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::OutputGain, 0.0f, 73));
+    std::vector<float> buffer(256);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample == 0.0f; }));
+    ASSERT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 1);
+    EXPECT_FLOAT_EQ(engine.getVoiceAllocator()->getVoice(0).getParams().outputGain,
+                    0.0f);
+}
+
+TEST(AudioEngineTest, TypedParameterPointsAreSortedAndEveryPointIsApplied) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+
+    // Host parameter queues are grouped by parameter, so arrival order is not
+    // necessarily timeline order across all host queues.
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 400.0f, 40));
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 300.0f, 20));
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(37, 1.0f, 40));
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 20));
+
+    std::vector<float> buffer(64);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    ASSERT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 2);
+    EXPECT_FLOAT_EQ(
+        engine.getVoiceAllocator()->getVoice(0).getParams().pitch[0].value,
+        300.0f);
+    EXPECT_FLOAT_EQ(
+        engine.getVoiceAllocator()->getVoice(1).getParams().pitch[0].value,
+        400.0f);
+    EXPECT_FLOAT_EQ(
+        engine.getParameterManager()->getParameterValue("pitch0Hz"), 400.0f);
+}
+
+TEST(AudioEngineTest, LaterUiTimelinePointWinsFinalStateOverEarlierHostPoint) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.getParameterEventQueue()->addEvent("pitch0Hz", 500.0f, 50);
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 300.0f, 20));
+
+    std::vector<float> buffer(64);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    EXPECT_FLOAT_EQ(
+        engine.getParameterManager()->getParameterValue("pitch0Hz"), 500.0f);
+}
+
+TEST(AudioEngineTest, SimultaneousTrajectoryMovesAreCommittedAsOneState) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setParameter("pitch1TimeMs", 90.0f);
+    engine.setParameter("pitch2TimeMs", 100.0f);
+
+    // VST queues are grouped by parameter and may arrive in either order.
+    // Applying the later point first must not let intermediate sanitization
+    // push it past the final requested earlier point.
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch2TimeMs, 20.0f, 64));
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch1TimeMs, 10.0f, 64));
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 64));
+
+    std::vector<float> buffer(128);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    ASSERT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 1);
+    const auto& triggered = engine.getVoiceAllocator()->getVoice(0).getParams();
+    EXPECT_FLOAT_EQ(triggered.pitch[1].timeMs, 10.0f);
+    EXPECT_FLOAT_EQ(triggered.pitch[2].timeMs, 20.0f);
+}
+
+TEST(AudioEngineTest, TypedNotesMergeWithUiParameterQueue) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 64));
+    engine.getParameterEventQueue()->addEvent("outputGain", 0.0f, 64);
+
+    std::vector<float> buffer(256);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample == 0.0f; }));
+}
+
+TEST(AudioEngineTest, BlockEndParametersPrecedeNotesAndAffectNextBlock) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.setSoftClippingEnabled(false);
+    constexpr std::uint32_t blockSamples = 256;
+
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, blockSamples));
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::OutputGain, 0.0f, blockSamples));
+    std::vector<float> first(blockSamples);
+    engine.processBlock(first.data(), first.size(), 1);
+
+    EXPECT_TRUE(std::all_of(first.begin(), first.end(),
+                            [](float sample) { return sample == 0.0f; }));
+    ASSERT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 1);
+    EXPECT_FLOAT_EQ(engine.getVoiceAllocator()->getVoice(0).getParams().outputGain,
+                    0.0f);
+
+    std::vector<float> second(blockSamples);
+    engine.processBlock(second.data(), second.size(), 1);
+    EXPECT_TRUE(std::all_of(second.begin(), second.end(),
+                            [](float sample) { return sample == 0.0f; }));
+}
+
+TEST(AudioEngineTest, TypedRealtimeQueuesHaveFixedCapacityAndCanBeCleared) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    for (std::size_t index = 0;
+         index < AudioEngine::kMaxRealtimeParameterEvents; ++index) {
+        ASSERT_TRUE(engine.scheduleParameterEvent(
+            KickParameterId::Pitch0Hz, 220.0f, 0));
     }
-    EXPECT_TRUE(hasNonZero);
-    
-    // Release the note
-    engine->noteOff(60);
-    
-    // Process more audio (envelope should decay)
-    std::vector<float> buffer2(512, 0.0f);
-    engine->processBlock(buffer2.data(), 512, 1);
-}
+    EXPECT_FALSE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 220.0f, 0));
 
-TEST_F(AudioEngineTest, AllNotesOffSilencesOutput) {
-    // Trigger multiple notes
-    for (int note = 60; note < 68; ++note) {
-        engine->noteOn(note, 0.8f);
+    for (std::size_t index = 0;
+         index < AudioEngine::kMaxRealtimeNoteEvents; ++index) {
+        ASSERT_TRUE(engine.scheduleNoteOnEvent(
+            36, 1.0f, static_cast<std::uint32_t>(index)));
     }
-    
-    // Release all notes
-    engine->allNotesOff();
-    
-    // Process enough audio for envelopes to complete
-    for (int i = 0; i < 100; ++i) {
-        std::vector<float> buffer(512, 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
+    EXPECT_FALSE(engine.scheduleNoteOnEvent(36, 1.0f, 0));
+
+    engine.clearScheduledEvents();
+    EXPECT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 330.0f, 0));
+    EXPECT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 0));
+}
+
+TEST(AudioEngineTest, ParameterOverflowStillPreservesLatestBlockState) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    for (std::size_t index = 0;
+         index < AudioEngine::kMaxRealtimeParameterEvents; ++index) {
+        ASSERT_TRUE(engine.scheduleParameterEvent(
+            KickParameterId::Pitch0Hz, 220.0f, 0));
     }
-    
-    // Final buffer should be silent (or very quiet)
-    std::vector<float> finalBuffer(512, 0.0f);
-    engine->processBlock(finalBuffer.data(), 512, 1);
-    
-    float maxAbs = 0.0f;
-    for (float sample : finalBuffer) {
-        maxAbs = std::max(maxAbs, std::abs(sample));
-    }
-    EXPECT_LT(maxAbs, 0.01f);  // Should be very quiet
+    EXPECT_FALSE(engine.scheduleParameterEvent(
+        KickParameterId::Pitch0Hz, 777.0f, 0));
+
+    std::vector<float> block(1);
+    engine.processBlock(block.data(), block.size(), 1);
+    EXPECT_FLOAT_EQ(
+        engine.getParameterManager()->getParameterValue("pitch0Hz"), 777.0f);
 }
 
-TEST_F(AudioEngineTest, GettersReturnValidPointers) {
-    EXPECT_NE(engine->getEffectsChain(), nullptr);
-    EXPECT_NE(engine->getVoiceAllocator(), nullptr);
-}
+TEST(AudioEngineTest, ZeroLengthFlushAppliesParametersBeforeNotes) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    ASSERT_TRUE(engine.scheduleNoteOnEvent(36, 1.0f, 99));
+    ASSERT_TRUE(engine.scheduleParameterEvent(
+        KickParameterId::OutputGain, 0.0f, 42));
+    engine.flushScheduledEvents();
 
-TEST_F(AudioEngineTest, SampleRateIsCorrect) {
-    EXPECT_FLOAT_EQ(engine->getSampleRate(), 48000.0f);
-}
-
-// ============================================================================
-// Combined Feature Tests
-// ============================================================================
-
-TEST_F(AudioEngineTest, MasterLevelAndSoftClippingWorkTogether) {
-    // Set high master level
-    engine->setMasterLevel(1.0f);
-    engine->setSoftClippingEnabled(true);
-    
-    // Trigger multiple notes
-    for (int note = 60; note < 68; ++note) {
-        engine->noteOn(note, 1.0f);
-    }
-    
-    // Process audio
-    std::vector<float> buffer(1024, 0.0f);
-    engine->processBlock(buffer.data(), 1024, 1);
-    
-    // Output should be limited to [-1.0, 1.0]
-    for (float sample : buffer) {
-        EXPECT_GE(sample, -1.0f);
-        EXPECT_LE(sample, 1.0f);
-        EXPECT_TRUE(std::isfinite(sample));
-    }
-}
-
-TEST_F(AudioEngineTest, AllSafetyFeaturesWorkTogether) {
-    // Enable all safety features
-    engine->setMasterLevel(0.8f);
-    engine->setSoftClippingEnabled(true);
-    engine->setNaNDetectionEnabled(true);
-    
-    // Trigger notes and process audio
-    engine->noteOn(60, 1.0f);
-    
-    for (int block = 0; block < 20; ++block) {
-        std::vector<float> buffer(512, 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
-        
-        // Verify all safety constraints
-        for (size_t i = 0; i < buffer.size(); ++i) {
-            EXPECT_TRUE(std::isfinite(buffer[i]));
-            EXPECT_GE(buffer[i], -1.0f);
-            EXPECT_LE(buffer[i], 1.0f);
-        }
-    }
-}
-
-// ============================================================================
-// Parameter Manager Integration Tests
-// ============================================================================
-
-TEST_F(AudioEngineTest, ParameterManagerIsInitialized) {
-    EXPECT_NE(engine->getParameterManager(), nullptr);
-}
-
-TEST_F(AudioEngineTest, ParameterManagerHasAllParameters) {
-    ParameterManager* pm = engine->getParameterManager();
-    ASSERT_NE(pm, nullptr);
-    
-    // Check that key parameters exist
-    EXPECT_TRUE(pm->hasParameter("basePitch"));
-    EXPECT_TRUE(pm->hasParameter("sineLevel"));
-    EXPECT_TRUE(pm->hasParameter("harmonicRatio"));
-    EXPECT_TRUE(pm->hasParameter("harmonicLevel"));
-    EXPECT_TRUE(pm->hasParameter("noiseLevel"));
-    EXPECT_TRUE(pm->hasParameter("attack"));
-    EXPECT_TRUE(pm->hasParameter("decay"));
-    EXPECT_TRUE(pm->hasParameter("sustain"));
-    EXPECT_TRUE(pm->hasParameter("release"));
-    EXPECT_TRUE(pm->hasParameter("compressorThreshold"));
-    EXPECT_TRUE(pm->hasParameter("reverbRoomSize"));
-    EXPECT_TRUE(pm->hasParameter("masterLevel"));
-}
-
-TEST_F(AudioEngineTest, ParameterManagerCanSetAndGetValues) {
-    ParameterManager* pm = engine->getParameterManager();
-    ASSERT_NE(pm, nullptr);
-    
-    // Set and get a parameter value
-    EXPECT_TRUE(pm->setParameterValue("basePitch", 60.0f));
-    EXPECT_FLOAT_EQ(pm->getParameterValue("basePitch"), 60.0f);
-    
-    // Set and get another parameter
-    EXPECT_TRUE(pm->setParameterValue("attack", 5.0f));
-    EXPECT_FLOAT_EQ(pm->getParameterValue("attack"), 5.0f);
-}
-
-// ============================================================================
-// Full Integration Tests
-// ============================================================================
-
-TEST_F(AudioEngineTest, FullAudioPipelineIntegration) {
-    // This test verifies the complete audio processing pipeline:
-    // Voice Allocator -> Effects Chain -> Master Level -> Soft Clipping
-    
-    ParameterManager* pm = engine->getParameterManager();
-    ASSERT_NE(pm, nullptr);
-    
-    // Configure synthesis parameters
-    pm->setParameterValue("basePitch", 50.0f);
-    pm->setParameterValue("sineLevel", 80.0f);
-    pm->setParameterValue("attack", 1.0f);
-    pm->setParameterValue("decay", 500.0f);
-    
-    // Configure effects
-    pm->setParameterValue("compressorThreshold", -12.0f);
-    pm->setParameterValue("compressorRatio", 4.0f);
-    pm->setParameterValue("reverbMix", 10.0f);
-    
-    // Set master level
-    engine->setMasterLevel(0.8f);
-    
-    // Trigger a note
-    engine->noteOn(60, 0.8f);
-    
-    // Process audio blocks
-    std::vector<float> buffer(512, 0.0f);
-    for (int block = 0; block < 10; ++block) {
-        std::fill(buffer.begin(), buffer.end(), 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
-        
-        // Verify output is valid
-        for (size_t i = 0; i < buffer.size(); ++i) {
-            EXPECT_TRUE(std::isfinite(buffer[i]));
-            EXPECT_GE(buffer[i], -1.0f);
-            EXPECT_LE(buffer[i], 1.0f);
-        }
-    }
-}
-
-TEST_F(AudioEngineTest, SampleRateConfigurationWorks) {
-    // Test that sample rate can be configured
-    auto engine2 = std::make_unique<AudioEngine>();
-    
-    // Initialize with different sample rates
-    engine2->initialize(44100.0f);
-    EXPECT_FLOAT_EQ(engine2->getSampleRate(), 44100.0f);
-    
-    engine2->initialize(96000.0f);
-    EXPECT_FLOAT_EQ(engine2->getSampleRate(), 96000.0f);
-    
-    // Verify audio processing still works
-    engine2->noteOn(60, 0.8f);
-    std::vector<float> buffer(512, 0.0f);
-    engine2->processBlock(buffer.data(), 512, 1);
-    
-    // Should produce non-zero output
-    bool hasNonZero = false;
-    for (float sample : buffer) {
-        if (sample != 0.0f) {
-            hasNonZero = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(hasNonZero);
-}
-
-TEST_F(AudioEngineTest, EffectsChainIntegration) {
-    // Verify effects chain is accessible and functional
-    EffectsChain* effects = engine->getEffectsChain();
-    ASSERT_NE(effects, nullptr);
-    
-    // Configure effects
-    effects->getCompressor().setThreshold(-20.0f);
-    effects->getCompressor().setRatio(4.0f);
-    effects->getReverb().setRoomSize(0.5f);
-    
-    // Trigger a note and process
-    engine->noteOn(60, 1.0f);
-    std::vector<float> buffer(512, 0.0f);
-    engine->processBlock(buffer.data(), 512, 1);
-    
-    // Output should be valid
-    for (float sample : buffer) {
-        EXPECT_TRUE(std::isfinite(sample));
-    }
-}
-
-TEST_F(AudioEngineTest, VoiceAllocatorIntegration) {
-    // Verify voice allocator is accessible and functional
-    VoiceAllocator* voices = engine->getVoiceAllocator();
-    ASSERT_NE(voices, nullptr);
-    
-    // Should have 8 voices
-    EXPECT_EQ(voices->getNumVoices(), 8);
-    
-    // Initially no active voices
-    EXPECT_EQ(voices->getNumActiveVoices(), 0);
-    
-    // Trigger some notes
-    engine->noteOn(60, 0.8f);
-    engine->noteOn(62, 0.8f);
-    engine->noteOn(64, 0.8f);
-    
-    // Should have 3 active voices
-    EXPECT_EQ(voices->getNumActiveVoices(), 3);
-    
-    // Release all
-    engine->allNotesOff();
-    
-    // Process enough audio for envelopes to complete
-    for (int i = 0; i < 100; ++i) {
-        std::vector<float> buffer(512, 0.0f);
-        engine->processBlock(buffer.data(), 512, 1);
-    }
-    
-    // Should have no active voices
-    EXPECT_EQ(voices->getNumActiveVoices(), 0);
+    ASSERT_EQ(engine.getVoiceAllocator()->getNumActiveVoices(), 1);
+    EXPECT_FLOAT_EQ(engine.getVoiceAllocator()->getVoice(0).getParams().outputGain,
+                    0.0f);
+    EXPECT_FLOAT_EQ(engine.getParameterManager()->getParameterValue("outputGain"),
+                    0.0f);
 }

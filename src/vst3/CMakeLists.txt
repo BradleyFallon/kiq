@@ -6,16 +6,6 @@ if(NOT EXISTS ${VST3_SDK_PATH})
     return()
 endif()
 
-# The bundled Steinberg SDK defaults plugin targets to a universal binary when
-# using Xcode, while project libraries remain native unless the whole build is
-# explicitly configured as universal. Keep all targets on the same native
-# architecture by default. Callers can override this cache option together
-# with CMAKE_OSX_ARCHITECTURES for a universal release build.
-set(SMTG_BUILD_UNIVERSAL_BINARY OFF CACHE BOOL "Build universal VST3 binaries")
-
-# Add VST3 SDK
-add_subdirectory(${VST3_SDK_PATH} ${CMAKE_BINARY_DIR}/vst3sdk)
-
 # Steinberg's plug-in helper resolves the platform entry point through this
 # directory-scoped variable. The SDK sets it only inside its own subdirectory,
 # so make it available where the Kiq target is declared.
@@ -33,6 +23,11 @@ smtg_add_vst3plugin(${VST3_PLUGIN_NAME}
     KickSynthCIDs.h
 )
 
+smtg_target_add_plugin_resources(${VST3_PLUGIN_NAME}
+    RESOURCES
+        resources/kiq.uidesc
+)
+
 target_include_directories(${VST3_PLUGIN_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -42,9 +37,9 @@ target_include_directories(${VST3_PLUGIN_NAME}
 
 target_link_libraries(${VST3_PLUGIN_NAME}
     PRIVATE
-        kick_drum_audio_engine
         kick_drum_ui
         sdk
+        vstgui_support
 )
 
 # Set plugin properties

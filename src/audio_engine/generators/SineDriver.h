@@ -5,12 +5,10 @@
 namespace KickDrum {
 
 /**
- * @brief Sine wave oscillator serving as the main tone and transient source
+ * @brief Sine wave oscillator serving as the kick body
  * 
  * The SineDriver generates a pure sine wave at a specified frequency using
- * a phase accumulator for sample-accurate frequency control. It serves as
- * the carrier signal for ring modulation and provides the main tonal body
- * of the kick drum.
+ * a phase accumulator for sample-accurate frequency control.
  * 
  * Implementation uses phase accumulator (0.0 to 1.0) for precise frequency
  * control and ensures phase continuity during frequency changes.
@@ -47,6 +45,12 @@ public:
      * or when synchronizing multiple oscillators.
      */
     void reset();
+
+    /** Set phase in normalized cycles. Values wrap into [0, 1). */
+    void setPhase(float phase);
+
+    /** Get the current normalized phase. */
+    float getPhase() const;
 
     /**
      * @brief Generate the next sample
