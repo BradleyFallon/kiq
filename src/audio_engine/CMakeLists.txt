@@ -22,6 +22,12 @@ add_library(kick_drum_audio_engine STATIC
     # Presets
     presets/Preset.cpp
     presets/PresetManager.cpp
+    presets/KickPresetIO.cpp
+
+    # Reference analysis and editor workflow
+    analysis/ReferenceAudio.cpp
+    export/KickWavExporter.cpp
+    workflow/KickParamsHistory.cpp
     
     # MIDI
     midi/MIDIMessage.cpp
@@ -39,17 +45,23 @@ add_library(kick_drum_audio_engine STATIC
 target_include_directories(kick_drum_audio_engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/analysis
+        ${CMAKE_CURRENT_SOURCE_DIR}/export
+        ${CMAKE_CURRENT_SOURCE_DIR}/presets
+        ${CMAKE_CURRENT_SOURCE_DIR}/workflow
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Link math library
 target_link_libraries(kick_drum_audio_engine
     PUBLIC
         Threads::Threads
-    PRIVATE
-        m
 )
+
+# MSVC's C runtime exposes these functions without a separate libm target.
+if(NOT MSVC)
+    target_link_libraries(kick_drum_audio_engine PRIVATE m)
+endif()
 
 # Platform-specific settings
 if(APPLE)

@@ -22,12 +22,26 @@ struct TransientParams {
     float beaterHardnessHz;
 };
 
+struct OutputStageParams {
+    float eqLowDb;
+    float eqMidDb;
+    float eqHighDb;
+    float saturation;
+    float limiterCeilingDb;
+};
+
 struct KickParams {
     std::array<CurvePoint, kTrajectoryPointCount> pitch;
     std::array<CurvePoint, kTrajectoryPointCount> amplitude;
     float strikePosition;
     TransientParams transient;
     float outputGain;
+    float membraneLevel;
+    float sampleLevel;
+    float phaseDegrees;
+    /** A negative value disables phase locking. */
+    float phaseLockMs;
+    OutputStageParams outputStage;
 };
 
 inline constexpr KickParams kDefaultKickParams {
@@ -44,6 +58,11 @@ inline constexpr KickParams kDefaultKickParams {
     0.25f,
     {0.18f, 0.12f, 7.0f, 6500.0f},
     0.8f,
+    1.0f,
+    0.0f,
+    0.0f,
+    -1.0f,
+    {0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
 };
 
 enum class KickParameterId : std::uint32_t {
@@ -73,6 +92,16 @@ enum class KickParameterId : std::uint32_t {
     AirDecayMs,
     BeaterHardnessHz,
     OutputGain,
+    // Appended to preserve the numeric IDs of every existing parameter.
+    MembraneLevel,
+    SampleLevel,
+    PhaseDegrees,
+    PhaseLockMs,
+    EqLowDb,
+    EqMidDb,
+    EqHighDb,
+    Saturation,
+    LimiterCeilingDb,
     Count,
 };
 
@@ -114,6 +143,15 @@ inline constexpr std::array<KickParameterSpec,
         {KickParameterId::AirDecayMs, "airDecayMs", "Air Decay", 1.0f, 50.0f, "ms"},
         {KickParameterId::BeaterHardnessHz, "beaterHardnessHz", "Beater Hardness", 200.0f, 16000.0f, "Hz"},
         {KickParameterId::OutputGain, "outputGain", "Output Gain", 0.0f, 1.0f, ""},
+        {KickParameterId::MembraneLevel, "membraneLevel", "Membrane Level", 0.0f, 1.0f, ""},
+        {KickParameterId::SampleLevel, "sampleLevel", "Sample Level", 0.0f, 1.0f, ""},
+        {KickParameterId::PhaseDegrees, "phaseDegrees", "Phase Rotation", -180.0f, 180.0f, "deg"},
+        {KickParameterId::PhaseLockMs, "phaseLockMs", "Phase Lock Time", -1.0f, 2000.0f, "ms"},
+        {KickParameterId::EqLowDb, "eqLowDb", "Low EQ", -12.0f, 12.0f, "dB"},
+        {KickParameterId::EqMidDb, "eqMidDb", "Mid EQ", -12.0f, 12.0f, "dB"},
+        {KickParameterId::EqHighDb, "eqHighDb", "High EQ", -12.0f, 12.0f, "dB"},
+        {KickParameterId::Saturation, "saturation", "Saturation", 0.0f, 1.0f, ""},
+        {KickParameterId::LimiterCeilingDb, "limiterCeilingDb", "Limiter Ceiling", -12.0f, 0.0f, "dB"},
     }};
 
 const KickParameterSpec* findKickParameterSpec(KickParameterId id);

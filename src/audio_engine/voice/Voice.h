@@ -3,6 +3,7 @@
 #include "../envelopes/Trajectory.h"
 #include "../generators/MembraneModel.h"
 #include "../generators/TransientGenerator.h"
+#include "../include/SampleLayerData.h"
 #include "../parameters/KickParams.h"
 
 #include <cstdint>
@@ -19,6 +20,9 @@ public:
     void initialize(float sampleRate);
     void setSampleRate(float sampleRate);
     void setParams(const KickParams& params);
+    /** Stage immutable sample data for the next trigger. Caller owns lifetime. */
+    void setSampleLayer(const SampleLayerData* sampleLayer,
+                        std::uint64_t revision = 0);
     void setOutputGain(float gain);
     const KickParams& getParams() const { return params_; }
 
@@ -31,6 +35,9 @@ public:
     std::uint64_t getAge() const { return age_; }
     float getCurrentPitchHz() const;
     float getCurrentAmplitudeDb() const;
+    std::uint64_t getActiveSampleLayerRevision() const {
+        return active_ && activeSampleLayer_ ? activeSampleLayerRevision_ : 0;
+    }
 
     void setPitchBend(float bendValue, float bendRange);
     float getPitchBendValue() const { return pitchBendValue_; }
@@ -40,6 +47,9 @@ public:
 
 private:
     float currentTimeMs() const;
+    float calculateFundamentalStartPhase() const;
+    float renderSampleLayer();
+    float sampleLayerDurationMs() const;
 
     MembraneModel membrane_;
     TransientGenerator transient_;
@@ -55,6 +65,14 @@ private:
     float sampleRate_;
     float pitchBendValue_;
     float pitchBendRange_;
+    float fundamentalStartPhase_;
+    const SampleLayerData* nextSampleLayer_;
+    const SampleLayerData* activeSampleLayer_;
+    std::uint64_t nextSampleLayerRevision_;
+    std::uint64_t activeSampleLayerRevision_;
+    double sampleLayerPosition_;
+    double sampleLayerIncrement_;
+    float activeSampleLayerDurationMs_;
     bool initialized_;
     bool active_;
 };

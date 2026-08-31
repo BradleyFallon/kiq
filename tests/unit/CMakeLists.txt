@@ -7,6 +7,9 @@ add_executable(kick_drum_tests
     generators/MembraneModelTest.cpp
     generators/NoiseGeneratorTest.cpp
     generators/TransientGeneratorTest.cpp
+
+    # Reference analysis tests
+    analysis/ReferenceAudioTest.cpp
     
     # Envelope tests
     envelopes/TrajectoryTest.cpp
@@ -23,6 +26,11 @@ add_executable(kick_drum_tests
     # Preset tests
     presets/PresetTest.cpp
     presets/PresetManagerTest.cpp
+    presets/KickPresetIOTest.cpp
+
+    # Workflow and export tests
+    workflow/KickParamsHistoryTest.cpp
+    export/KickWavExporterTest.cpp
     
     # MIDI tests
     midi/MIDIMessageTest.cpp

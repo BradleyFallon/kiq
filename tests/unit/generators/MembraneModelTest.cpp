@@ -3,6 +3,7 @@
 #include "audio_engine/generators/MembraneModel.h"
 #include "audio_engine/generators/SineDriver.h"
 
+#include <cmath>
 #include <vector>
 
 using namespace KickDrum;
@@ -52,4 +53,17 @@ TEST(MembraneModelTest, CenterStrikeExcitesOnlyFundamentalMode) {
     for (const float sample : center) {
         EXPECT_NEAR(sample, fundamental.generate(), 1.0e-6f);
     }
+}
+
+TEST(MembraneModelTest, FundamentalPhaseCanRotateWithoutMovingUpperModes) {
+    MembraneModel membrane;
+    membrane.initialize(48000.0f);
+    membrane.setStrikePosition(0.0f);
+    membrane.setFundamentalPhase(0.25f);
+    membrane.trigger();
+
+    EXPECT_NEAR(membrane.renderSample(60.0f, 0.0f), 1.0f, 1.0e-6f);
+    membrane.setFundamentalPhase(-0.25f);
+    membrane.trigger();
+    EXPECT_NEAR(membrane.renderSample(60.0f, 0.0f), -1.0f, 1.0e-6f);
 }

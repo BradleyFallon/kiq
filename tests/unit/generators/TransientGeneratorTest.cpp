@@ -88,3 +88,32 @@ TEST(TransientGeneratorTest, ImpactDurationIsSampleRateIndependent) {
     EXPECT_LT(time48, 1.0f);
     EXPECT_NEAR(time48, time96, 1000.0f / 48000.0f);
 }
+
+TEST(TransientGeneratorTest, ReportsImpactAndAirAsIndependentLayers) {
+    TransientGenerator impactOnly;
+    impactOnly.initialize(48000.0f);
+    impactOnly.setParams({1.0f, 0.0f, 7.0f, 6500.0f});
+    impactOnly.trigger();
+
+    bool heardImpact = false;
+    for (int sample = 0; sample < 256; ++sample) {
+        const auto layers = impactOnly.renderLayers(
+            static_cast<float>(sample) * 1000.0f / 48000.0f);
+        heardImpact = heardImpact || std::abs(layers.impact) > 1.0e-4f;
+        EXPECT_FLOAT_EQ(layers.air, 0.0f);
+    }
+    EXPECT_TRUE(heardImpact);
+
+    TransientGenerator airOnly;
+    airOnly.initialize(48000.0f);
+    airOnly.setParams({0.0f, 1.0f, 7.0f, 6500.0f});
+    airOnly.trigger();
+    bool heardAir = false;
+    for (int sample = 0; sample < 256; ++sample) {
+        const auto layers = airOnly.renderLayers(
+            static_cast<float>(sample) * 1000.0f / 48000.0f);
+        EXPECT_FLOAT_EQ(layers.impact, 0.0f);
+        heardAir = heardAir || std::abs(layers.air) > 1.0e-4f;
+    }
+    EXPECT_TRUE(heardAir);
+}

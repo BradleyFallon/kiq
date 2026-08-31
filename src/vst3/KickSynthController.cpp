@@ -5,8 +5,12 @@
 #include "pluginterfaces/base/ibstream.h"
 #include "public.sdk/source/vst/vstparameters.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace Steinberg {
 namespace Vst {
@@ -34,12 +38,17 @@ tresult PLUGIN_API KickSynthController::setComponentState(IBStream* state) {
     IBStreamer streamer(state, kLittleEndian);
     uint32 version = 0;
     uint32 numParams = 0;
-    if (!streamer.readInt32u(version) || !streamer.readInt32u(numParams)) {
+    if (!streamer.readInt32u(version) ||
+        version == 0 || version > kStateFormatVersion ||
+        !streamer.readInt32u(numParams) ||
+        numParams > kMaximumStateParameterCount) {
         return kResultFalse;
     }
+    KickDrum::KickParams loadedParams = KickDrum::kDefaultKickParams;
     for (uint32 index = 0; index < numParams; ++index) {
         uint32 idLength = 0;
-        if (!streamer.readInt32u(idLength)) {
+        if (!streamer.readInt32u(idLength) || idLength == 0 ||
+            idLength > kMaximumStateParameterIdBytes) {
             return kResultFalse;
         }
         std::string parameterId(idLength, '\0');
@@ -51,10 +60,57 @@ tresult PLUGIN_API KickSynthController::setComponentState(IBStream* state) {
             return kResultFalse;
         }
         if (const auto* mapping = findParameterMapping(parameterId)) {
-            setParamNormalized(mapping->vstId,
-                               normalizeParameterValue(*mapping, value));
+            KickDrum::setKickParameter(
+                loadedParams, mapping->engineId, static_cast<float>(value));
         }
     }
+    std::shared_ptr<const KickDrum::SampleLayerData> loadedSampleLayer;
+    if (version >= 2) {
+        uint32 hasSampleLayer = 0;
+        if (!streamer.readInt32u(hasSampleLayer) || hasSampleLayer > 1) {
+            return kResultFalse;
+        }
+        if (hasSampleLayer != 0) {
+            double sourceSampleRate = 0.0;
+            uint32 sampleCount = 0;
+            if (!streamer.readDouble(sourceSampleRate) ||
+                !streamer.readInt32u(sampleCount) ||
+                sampleCount == 0 ||
+                sampleCount > kMaximumSampleLayerSamples ||
+                !std::isfinite(sourceSampleRate) ||
+                sourceSampleRate < kMinimumSampleLayerRate ||
+                sourceSampleRate > kMaximumSampleLayerRate) {
+                return kResultFalse;
+            }
+            auto layer = std::make_shared<KickDrum::SampleLayerData>();
+            layer->sourceSampleRate = static_cast<float>(sourceSampleRate);
+            layer->samples.resize(sampleCount);
+            const TSize byteCount = static_cast<TSize>(
+                static_cast<std::size_t>(sampleCount) * sizeof(float));
+            if (byteCount > 0 &&
+                streamer.readRaw(layer->samples.data(), byteCount) != byteCount) {
+                return kResultFalse;
+            }
+            for (float& sample : layer->samples) {
+                sample = std::isfinite(sample)
+                             ? std::clamp(sample, -1.0f, 1.0f)
+                             : 0.0f;
+            }
+            loadedSampleLayer = std::move(layer);
+        }
+    }
+
+    loadedParams = KickDrum::sanitizeKickParams(loadedParams);
+    for (const auto& mapping : kKickSynthParameterMappings) {
+        setParamNormalized(
+            mapping.vstId,
+            normalizeParameterValue(
+                mapping,
+                KickDrum::getKickParameter(loadedParams, mapping.engineId)));
+    }
+    // The processor receives and restores this same component state directly;
+    // retain the layer for the editor without sending a duplicate copy back.
+    sampleLayer_ = std::move(loadedSampleLayer);
     return kResultOk;
 }
 
@@ -117,6 +173,15 @@ void KickSynthController::registerParameters() {
     ADD_PARAMETER("Air Decay", "ms", kParamAirDecayMs, KickDrum::KickParameterId::AirDecayMs);
     ADD_PARAMETER("Beater Hardness", "Hz", kParamBeaterHardnessHz, KickDrum::KickParameterId::BeaterHardnessHz);
     ADD_PARAMETER("Output Gain", "", kParamOutputGain, KickDrum::KickParameterId::OutputGain);
+    ADD_PARAMETER("Membrane Level", "", kParamMembraneLevel, KickDrum::KickParameterId::MembraneLevel);
+    ADD_PARAMETER("Sample Level", "", kParamSampleLevel, KickDrum::KickParameterId::SampleLevel);
+    ADD_PARAMETER("Phase Rotation", "deg", kParamPhaseDegrees, KickDrum::KickParameterId::PhaseDegrees);
+    ADD_PARAMETER("Phase Lock Time", "ms", kParamPhaseLockMs, KickDrum::KickParameterId::PhaseLockMs);
+    ADD_PARAMETER("Low EQ", "dB", kParamEqLowDb, KickDrum::KickParameterId::EqLowDb);
+    ADD_PARAMETER("Mid EQ", "dB", kParamEqMidDb, KickDrum::KickParameterId::EqMidDb);
+    ADD_PARAMETER("High EQ", "dB", kParamEqHighDb, KickDrum::KickParameterId::EqHighDb);
+    ADD_PARAMETER("Saturation", "", kParamSaturation, KickDrum::KickParameterId::Saturation);
+    ADD_PARAMETER("Limiter Ceiling", "dB", kParamLimiterCeilingDb, KickDrum::KickParameterId::LimiterCeilingDb);
 
 #undef ADD_PARAMETER
 
@@ -183,6 +248,61 @@ void KickSynthController::setAuditionLoop(bool enabled, float bpm) {
             sendMessage(message);
         }
     }
+}
+
+void KickSynthController::setSampleLayer(
+    std::shared_ptr<const KickDrum::SampleLayerData> sampleLayer) {
+    sampleLayer_ = std::move(sampleLayer);
+    if (sampleLayer_ &&
+        (sampleLayer_->samples.empty() ||
+         sampleLayer_->samples.size() > kMaximumSampleLayerSamples ||
+         !std::isfinite(sampleLayer_->sourceSampleRate) ||
+         sampleLayer_->sourceSampleRate < kMinimumSampleLayerRate ||
+         sampleLayer_->sourceSampleRate > kMaximumSampleLayerRate)) {
+        sampleLayer_.reset();
+    }
+    auto message = owned(allocateMessage());
+    if (!message) {
+        return;
+    }
+    message->setMessageID(kSampleLayerMessageId);
+    auto* attributes = message->getAttributes();
+    if (!attributes) {
+        return;
+    }
+    attributes->setInt(kSampleLayerEnabledAttribute, sampleLayer_ ? 1 : 0);
+    if (sampleLayer_) {
+        constexpr std::uint32_t formatVersion = 1;
+        const std::uint32_t sampleCount =
+            static_cast<std::uint32_t>(sampleLayer_->samples.size());
+        const std::size_t headerBytes = sizeof(formatVersion) +
+                                        sizeof(sampleLayer_->sourceSampleRate) +
+                                        sizeof(sampleCount);
+        std::vector<std::uint8_t> payload(
+            headerBytes + sampleLayer_->samples.size() * sizeof(float));
+        std::size_t offset = 0;
+        auto append = [&payload, &offset](const void* source, std::size_t size) {
+            std::memcpy(payload.data() + offset, source, size);
+            offset += size;
+        };
+        append(&formatVersion, sizeof(formatVersion));
+        append(&sampleLayer_->sourceSampleRate,
+               sizeof(sampleLayer_->sourceSampleRate));
+        append(&sampleCount, sizeof(sampleCount));
+        if (!sampleLayer_->samples.empty()) {
+            append(sampleLayer_->samples.data(),
+                   sampleLayer_->samples.size() * sizeof(float));
+        }
+        attributes->setBinary(kSampleLayerDataAttribute, payload.data(),
+                              static_cast<std::uint32_t>(payload.size()));
+    }
+    sendMessage(message);
+    setDirty(true);
+}
+
+std::shared_ptr<const KickDrum::SampleLayerData>
+KickSynthController::getSampleLayer() const {
+    return sampleLayer_;
 }
 
 float KickSynthController::getOutputPeak() {

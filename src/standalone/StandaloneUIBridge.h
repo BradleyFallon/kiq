@@ -30,6 +30,9 @@ public:
     void endParameterEdit(KickParameterId id) override;
     void triggerAudition() override;
     void setAuditionLoop(bool enabled, float bpm) override;
+    void setSampleLayer(
+        std::shared_ptr<const SampleLayerData> sampleLayer) override;
+    std::shared_ptr<const SampleLayerData> getSampleLayer() const override;
     float getOutputPeak() override;
     bool getOutputClip() override;
 

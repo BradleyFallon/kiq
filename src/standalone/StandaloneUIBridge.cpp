@@ -113,6 +113,17 @@ void StandaloneUIBridge::setAuditionLoop(bool enabled, float bpm) {
     }
 }
 
+void StandaloneUIBridge::setSampleLayer(
+    std::shared_ptr<const SampleLayerData> sampleLayer) {
+    if (audioEngine_) {
+        audioEngine_->setSampleLayer(std::move(sampleLayer));
+    }
+}
+
+std::shared_ptr<const SampleLayerData> StandaloneUIBridge::getSampleLayer() const {
+    return audioEngine_ ? audioEngine_->getSampleLayer() : nullptr;
+}
+
 float StandaloneUIBridge::getOutputPeak() {
     return audioEngine_ ? audioEngine_->getOutputPeak() : 0.0f;
 }

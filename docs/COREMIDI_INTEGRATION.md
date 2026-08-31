@@ -1,5 +1,11 @@
 # CoreMIDI Integration Implementation
 
+> Historical milestone note: the parsing/interface classes described here
+> remain in the repository, but the current standalone bridge wires only its
+> thread-safe note-on callback. Note-off, CC mapping, and pitch bend are not
+> currently connected to the app's synthesis controls. See
+> [STANDALONE_APP_GUIDE.md](STANDALONE_APP_GUIDE.md) for current behavior.
+
 ## Overview
 
 This document describes the implementation of CoreMIDI integration for the Kick Drum Synthesizer standalone macOS application (Task 17.3).

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <string_view>
 
 namespace Steinberg {
@@ -45,6 +46,15 @@ enum KickSynthParams : ParamID {
     kParamAirDecayMs,
     kParamBeaterHardnessHz,
     kParamOutputGain,
+    kParamMembraneLevel,
+    kParamSampleLevel,
+    kParamPhaseDegrees,
+    kParamPhaseLockMs,
+    kParamEqLowDb,
+    kParamEqMidDb,
+    kParamEqHighDb,
+    kParamSaturation,
+    kParamLimiterCeilingDb,
 
     // Read-only UI telemetry. These are intentionally outside the engine
     // parameter range and are never serialized as synthesis state.
@@ -56,6 +66,16 @@ inline constexpr const char* kAuditionMessageId = "Kiq.Audition";
 inline constexpr const char* kAuditionLoopMessageId = "Kiq.AuditionLoop";
 inline constexpr const char* kAuditionLoopEnabledAttribute = "Enabled";
 inline constexpr const char* kAuditionLoopBpmAttribute = "BPM";
+inline constexpr const char* kSampleLayerMessageId = "Kiq.SampleLayer";
+inline constexpr const char* kSampleLayerEnabledAttribute = "Enabled";
+inline constexpr const char* kSampleLayerDataAttribute = "AudioData";
+
+inline constexpr std::uint32_t kStateFormatVersion = 2;
+inline constexpr std::uint32_t kMaximumStateParameterCount = 1024;
+inline constexpr std::uint32_t kMaximumStateParameterIdBytes = 256;
+inline constexpr std::uint32_t kMaximumSampleLayerSamples = 10000000;
+inline constexpr float kMinimumSampleLayerRate = 1000.0f;
+inline constexpr float kMaximumSampleLayerRate = 768000.0f;
 
 struct KickSynthParameterMapping {
     ParamID vstId;
@@ -91,6 +111,15 @@ inline constexpr std::array<KickSynthParameterMapping,
         {kParamAirDecayMs, KickDrum::KickParameterId::AirDecayMs},
         {kParamBeaterHardnessHz, KickDrum::KickParameterId::BeaterHardnessHz},
         {kParamOutputGain, KickDrum::KickParameterId::OutputGain},
+        {kParamMembraneLevel, KickDrum::KickParameterId::MembraneLevel},
+        {kParamSampleLevel, KickDrum::KickParameterId::SampleLevel},
+        {kParamPhaseDegrees, KickDrum::KickParameterId::PhaseDegrees},
+        {kParamPhaseLockMs, KickDrum::KickParameterId::PhaseLockMs},
+        {kParamEqLowDb, KickDrum::KickParameterId::EqLowDb},
+        {kParamEqMidDb, KickDrum::KickParameterId::EqMidDb},
+        {kParamEqHighDb, KickDrum::KickParameterId::EqHighDb},
+        {kParamSaturation, KickDrum::KickParameterId::Saturation},
+        {kParamLimiterCeilingDb, KickDrum::KickParameterId::LimiterCeilingDb},
     }};
 
 inline const KickSynthParameterMapping* findParameterMapping(ParamID vstId) {
@@ -121,6 +150,9 @@ inline ParamValue normalizeParameterValue(const KickSynthParameterMapping& mappi
     if (!spec || spec->maximum == spec->minimum) {
         return 0.0;
     }
+    if (!std::isfinite(value)) {
+        value = KickDrum::getDefaultKickParameter(mapping.engineId);
+    }
     return std::clamp((value - spec->minimum) / (spec->maximum - spec->minimum),
                       0.0, 1.0);
 }
@@ -130,6 +162,9 @@ inline double denormalizeParameterValue(const KickSynthParameterMapping& mapping
     const auto* spec = KickDrum::findKickParameterSpec(mapping.engineId);
     if (!spec) {
         return 0.0;
+    }
+    if (!std::isfinite(normalizedValue)) {
+        return KickDrum::getDefaultKickParameter(mapping.engineId);
     }
     normalizedValue = std::clamp(normalizedValue, 0.0, 1.0);
     return spec->minimum + normalizedValue * (spec->maximum - spec->minimum);

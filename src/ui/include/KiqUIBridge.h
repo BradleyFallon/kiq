@@ -2,6 +2,12 @@
 
 #include "KickParams.h"
 
+#include <memory>
+
+namespace KickDrum {
+struct SampleLayerData;
+}
+
 namespace KickDrum::UI {
 
 /** Host-facing bridge used by the shared VST3 and standalone editor. */
@@ -16,6 +22,11 @@ public:
 
     virtual void triggerAudition() = 0;
     virtual void setAuditionLoop(bool enabled, float bpm) = 0;
+    /** Replace the optional immutable sample layer for subsequent hits. */
+    virtual void setSampleLayer(
+        std::shared_ptr<const SampleLayerData> sampleLayer) = 0;
+    /** Return the layer currently associated with editor/processor state. */
+    virtual std::shared_ptr<const SampleLayerData> getSampleLayer() const = 0;
     virtual float getOutputPeak() = 0;
     virtual bool getOutputClip() = 0;
 };

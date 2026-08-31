@@ -18,6 +18,11 @@ public:
     void initialize(float sampleRate);
     void setSampleRate(float sampleRate);
     void setParams(const KickParams& params);
+    /** Update global post-voice state without rebuilding idle voices. */
+    void setOutputStageParams(const OutputStageParams& params);
+    /** Stage sample data for voices allocated after this call. */
+    void setSampleLayer(const SampleLayerData* sampleLayer,
+                        std::uint64_t revision = 0);
     const KickParams& getParams() const { return params_; }
 
     Voice* allocateVoice(int note, float velocity);
@@ -31,6 +36,8 @@ public:
         return voices_[static_cast<std::size_t>(index)];
     }
     int getNumActiveVoices() const;
+    std::array<std::uint64_t, kMaxVoices>
+    activeSampleLayerRevisions() const;
 
 private:
     Voice* findIdleVoice();
@@ -38,6 +45,8 @@ private:
 
     std::array<Voice, kMaxVoices> voices_;
     KickParams params_;
+    const SampleLayerData* sampleLayer_;
+    std::uint64_t sampleLayerRevision_;
     float sampleRate_;
     bool initialized_;
 };

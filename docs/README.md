@@ -7,7 +7,12 @@ The current implementation is documented in:
 - [Standalone app](STANDALONE_APP_GUIDE.md)
 - [Project structure](PROJECT_STRUCTURE.md)
 - [CoreAudio integration](COREAUDIO_INTEGRATION.md)
-- [CoreMIDI integration](COREMIDI_INTEGRATION.md)
+
+Historical implementation notes:
+
+- [CoreMIDI integration milestone](COREMIDI_INTEGRATION.md) — the current
+  standalone app connects note-on only; its older CC/pitch-routing discussion
+  is not a statement of current UI support.
 
 Files under `checkpoints/` record earlier milestones and may describe the
 retired ADSR/ring-modulation engine. Git history is the archive for removed

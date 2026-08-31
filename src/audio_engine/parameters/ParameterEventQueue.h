@@ -1,8 +1,9 @@
 #pragma once
 
 #include "ParameterEvent.h"
-#include <vector>
+#include <cstdint>
 #include <mutex>
+#include <vector>
 
 namespace KickDrum {
 
@@ -48,6 +49,15 @@ public:
      * @param sampleOffset Sample offset within next buffer (default: 0)
      */
     void addEvent(const std::string& parameterId, float value, uint32_t sampleOffset = 0);
+
+    /**
+     * Add a complete producer-side batch under one lock.
+     *
+     * This is used for state restoration so the audio thread observes either
+     * the old state or the whole replacement, never a partially enqueued
+     * trajectory.
+     */
+    void addEvents(const std::vector<ParameterEvent>& events);
     
     /**
      * @brief Get all events for the current buffer and clear the queue
@@ -89,6 +99,7 @@ public:
 private:
     std::vector<ParameterEvent> events_;  ///< Pending parameter events
     mutable std::mutex mutex_;            ///< Mutex for thread safety
+    std::uint64_t nextOrder_ = 0;         ///< Equal-offset producer ordering
 };
 
 } // namespace KickDrum

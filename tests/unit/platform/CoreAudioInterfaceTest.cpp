@@ -181,7 +181,7 @@ TEST_F(CoreAudioInterfaceTest, AudioCallbackRouting) {
     ASSERT_TRUE(startSuccess) << "Failed to start audio";
     
     // Trigger a note - this should route through the audio callback
-    audioEngine->noteOn(60, 0.8f);
+    audioEngine->enqueueNoteOn(60, 0.8f);
     
     // Let it run briefly to ensure callback is called
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

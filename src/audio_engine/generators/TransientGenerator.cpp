@@ -21,17 +21,30 @@ TransientGenerator::TransientGenerator()
 }
 
 void TransientGenerator::initialize(float sampleRate) {
-    sampleRate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
+    sampleRate_ = std::isfinite(sampleRate) && sampleRate > 0.0f
+                      ? sampleRate
+                      : 48000.0f;
     updateFilterCoefficient();
     trigger();
 }
 
 void TransientGenerator::setParams(const TransientParams& params) {
-    params_.impactLevel = std::clamp(params.impactLevel, 0.0f, 1.0f);
-    params_.airLevel = std::clamp(params.airLevel, 0.0f, 1.0f);
-    params_.airDecayMs = std::clamp(params.airDecayMs, 1.0f, 50.0f);
+    const auto finiteOr = [](float value, float fallback) {
+        return std::isfinite(value) ? value : fallback;
+    };
+    params_.impactLevel = std::clamp(
+        finiteOr(params.impactLevel, kDefaultKickParams.transient.impactLevel),
+        0.0f, 1.0f);
+    params_.airLevel = std::clamp(
+        finiteOr(params.airLevel, kDefaultKickParams.transient.airLevel),
+        0.0f, 1.0f);
+    params_.airDecayMs = std::clamp(
+        finiteOr(params.airDecayMs, kDefaultKickParams.transient.airDecayMs),
+        1.0f, 50.0f);
     params_.beaterHardnessHz =
-        std::clamp(params.beaterHardnessHz, 200.0f, 16000.0f);
+        std::clamp(finiteOr(params.beaterHardnessHz,
+                            kDefaultKickParams.transient.beaterHardnessHz),
+                   200.0f, 16000.0f);
     updateFilterCoefficient();
 }
 
@@ -41,7 +54,12 @@ void TransientGenerator::trigger() {
     lowBandState_ = 0.0f;
 }
 
-float TransientGenerator::renderSample(float timeMs) {
+TransientLayers TransientGenerator::renderLayers(float timeMs) {
+    TransientLayers layers;
+    if (!std::isfinite(timeMs) || timeMs < 0.0f) {
+        return layers;
+    }
+
     float impact = 0.0f;
     if (timeMs < contactDurationMs_) {
         const float phase = std::clamp(timeMs / contactDurationMs_, 0.0f, 1.0f);
@@ -66,7 +84,14 @@ float TransientGenerator::renderSample(float timeMs) {
               params_.airLevel;
     }
 
-    return impact + air;
+    layers.impact = impact;
+    layers.air = air;
+    return layers;
+}
+
+float TransientGenerator::renderSample(float timeMs) {
+    const auto layers = renderLayers(timeMs);
+    return layers.impact + layers.air;
 }
 
 float TransientGenerator::durationMs() const {

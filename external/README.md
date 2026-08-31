@@ -4,7 +4,8 @@ This directory contains external dependencies required for building the Kick Dru
 
 ## VST3 SDK
 
-The VST3 SDK is required to build the VST3 plugin version of the synthesizer.
+The VST3 SDK is required to build the VST3 plugin and its bundled VSTGUI is
+also used by the standalone application.
 
 ### Download and Setup
 
@@ -50,5 +51,5 @@ external/
 
 - The VST3 SDK is not included in this repository due to licensing restrictions
 - You must download it separately from the official Steinberg repository
-- The SDK is only required if you want to build the VST3 plugin (`BUILD_VST3=ON`)
-- The standalone application can be built without the VST3 SDK
+- The SDK is required for either graphical target: the VST3 plugin or standalone app
+- Core engine and unit-test-only builds do not require it

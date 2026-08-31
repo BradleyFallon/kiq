@@ -1,6 +1,7 @@
 #include "KickParams.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace KickDrum {
 
@@ -46,6 +47,15 @@ float getKickParameter(const KickParams& params, KickParameterId id) {
         case KickParameterId::AirDecayMs: return params.transient.airDecayMs;
         case KickParameterId::BeaterHardnessHz: return params.transient.beaterHardnessHz;
         case KickParameterId::OutputGain: return params.outputGain;
+        case KickParameterId::MembraneLevel: return params.membraneLevel;
+        case KickParameterId::SampleLevel: return params.sampleLevel;
+        case KickParameterId::PhaseDegrees: return params.phaseDegrees;
+        case KickParameterId::PhaseLockMs: return params.phaseLockMs;
+        case KickParameterId::EqLowDb: return params.outputStage.eqLowDb;
+        case KickParameterId::EqMidDb: return params.outputStage.eqMidDb;
+        case KickParameterId::EqHighDb: return params.outputStage.eqHighDb;
+        case KickParameterId::Saturation: return params.outputStage.saturation;
+        case KickParameterId::LimiterCeilingDb: return params.outputStage.limiterCeilingDb;
         case KickParameterId::Count: break;
     }
     return 0.0f;
@@ -55,6 +65,12 @@ void setKickParameter(KickParams& params, KickParameterId id, float value) {
     const auto* spec = findKickParameterSpec(id);
     if (!spec) {
         return;
+    }
+    // All external parameter paths converge here. Falling back to the
+    // authoritative default keeps NaNs and infinities out of voice and filter
+    // state instead of relying on std::clamp's unspecified NaN ordering.
+    if (!std::isfinite(value)) {
+        value = getKickParameter(kDefaultKickParams, id);
     }
     value = std::clamp(value, spec->minimum, spec->maximum);
 
@@ -85,6 +101,15 @@ void setKickParameter(KickParams& params, KickParameterId id, float value) {
         case KickParameterId::AirDecayMs: params.transient.airDecayMs = value; break;
         case KickParameterId::BeaterHardnessHz: params.transient.beaterHardnessHz = value; break;
         case KickParameterId::OutputGain: params.outputGain = value; break;
+        case KickParameterId::MembraneLevel: params.membraneLevel = value; break;
+        case KickParameterId::SampleLevel: params.sampleLevel = value; break;
+        case KickParameterId::PhaseDegrees: params.phaseDegrees = value; break;
+        case KickParameterId::PhaseLockMs: params.phaseLockMs = value; break;
+        case KickParameterId::EqLowDb: params.outputStage.eqLowDb = value; break;
+        case KickParameterId::EqMidDb: params.outputStage.eqMidDb = value; break;
+        case KickParameterId::EqHighDb: params.outputStage.eqHighDb = value; break;
+        case KickParameterId::Saturation: params.outputStage.saturation = value; break;
+        case KickParameterId::LimiterCeilingDb: params.outputStage.limiterCeilingDb = value; break;
         case KickParameterId::Count: break;
     }
 }

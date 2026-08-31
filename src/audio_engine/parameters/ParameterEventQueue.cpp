@@ -1,5 +1,6 @@
 #include "ParameterEventQueue.h"
 #include <algorithm>
+#include <utility>
 
 namespace KickDrum {
 
@@ -10,11 +11,23 @@ ParameterEventQueue::ParameterEventQueue() {
 
 void ParameterEventQueue::addEvent(const ParameterEvent& event) {
     std::lock_guard<std::mutex> lock(mutex_);
-    events_.push_back(event);
+    ParameterEvent sequenced = event;
+    sequenced.order = nextOrder_++;
+    events_.push_back(std::move(sequenced));
 }
 
 void ParameterEventQueue::addEvent(const std::string& parameterId, float value, uint32_t sampleOffset) {
     addEvent(ParameterEvent(parameterId, value, sampleOffset));
+}
+
+void ParameterEventQueue::addEvents(const std::vector<ParameterEvent>& events) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    events_.reserve(events_.size() + events.size());
+    for (const auto& event : events) {
+        ParameterEvent sequenced = event;
+        sequenced.order = nextOrder_++;
+        events_.push_back(std::move(sequenced));
+    }
 }
 
 void ParameterEventQueue::getEventsForBuffer(std::vector<ParameterEvent>& outEvents) {
@@ -31,12 +44,15 @@ void ParameterEventQueue::getEventsForBuffer(std::vector<ParameterEvent>& outEve
     lock.unlock();
 
     // Sort after releasing the producer lock.
+    // Explicit sequence numbers preserve producer order at equal offsets
+    // without std::stable_sort's potential temporary allocation on audio.
     std::sort(outEvents.begin(), outEvents.end());
 }
 
 void ParameterEventQueue::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     events_.clear();
+    nextOrder_ = 0;
 }
 
 size_t ParameterEventQueue::getEventCount() const {

@@ -143,3 +143,84 @@ TEST(VoiceTest, OutputStaysFinite) {
         EXPECT_TRUE(std::isfinite(sample));
     }
 }
+
+TEST(VoiceTest, MembraneGainCanMuteBodyIndependently) {
+    Voice voice;
+    voice.initialize(48000.0f);
+    KickParams params = kDefaultKickParams;
+    params.membraneLevel = 0.0f;
+    params.transient.impactLevel = 0.0f;
+    params.transient.airLevel = 0.0f;
+    voice.setParams(params);
+
+    for (const float sample : renderHit(voice, 512)) {
+        EXPECT_FLOAT_EQ(sample, 0.0f);
+    }
+}
+
+TEST(VoiceTest, OptionalSampleLayerResamplesAtSourceRate) {
+    Voice voice;
+    voice.initialize(48000.0f);
+    SampleLayerData sampleLayer;
+    sampleLayer.sourceSampleRate = 24000.0f;
+    sampleLayer.samples.assign(480, 0.25f);
+
+    KickParams params = kDefaultKickParams;
+    params.membraneLevel = 0.0f;
+    params.transient.impactLevel = 0.0f;
+    params.transient.airLevel = 0.0f;
+    params.sampleLevel = 1.0f;
+    params.outputGain = 1.0f;
+    voice.setParams(params);
+    voice.setSampleLayer(&sampleLayer);
+
+    const auto rendered = renderHit(voice, 16);
+    for (const float sample : rendered) {
+        EXPECT_FLOAT_EQ(sample, 0.25f);
+    }
+}
+
+TEST(VoiceTest, PhaseRotationSetsAttackPhase) {
+    Voice voice;
+    voice.initialize(48000.0f);
+    KickParams params = kDefaultKickParams;
+    for (auto& point : params.pitch) {
+        point.value = 100.0f;
+    }
+    for (auto& point : params.amplitude) {
+        point.value = 0.0f;
+    }
+    params.strikePosition = 0.0f;
+    params.transient.impactLevel = 0.0f;
+    params.transient.airLevel = 0.0f;
+    params.outputGain = 1.0f;
+    params.phaseDegrees = 90.0f;
+    params.phaseLockMs = -1.0f;
+    voice.setParams(params);
+
+    const auto rendered = renderHit(voice, 1);
+    ASSERT_EQ(rendered.size(), 1u);
+    EXPECT_NEAR(rendered.front(), 1.0f, 1.0e-5f);
+}
+
+TEST(VoiceTest, PhaseLockHitsRequestedPhaseAtRequestedTime) {
+    Voice voice;
+    voice.initialize(48000.0f);
+    KickParams params = kDefaultKickParams;
+    for (auto& point : params.pitch) {
+        point.value = 100.0f;
+    }
+    for (auto& point : params.amplitude) {
+        point.value = 0.0f;
+    }
+    params.strikePosition = 0.0f;
+    params.transient.impactLevel = 0.0f;
+    params.transient.airLevel = 0.0f;
+    params.outputGain = 1.0f;
+    params.phaseDegrees = 90.0f;
+    params.phaseLockMs = 7.5f;
+    voice.setParams(params);
+
+    const auto rendered = renderHit(voice, 361);
+    EXPECT_NEAR(rendered[360], 1.0f, 1.0e-4f);
+}

@@ -1,19 +1,29 @@
 #include "KiqMainView.h"
 
-#include "DSPUtils.h"
+#include "KickPresetIO.h"
+#include "KickWavExporter.h"
+#include "KiqFactoryPresets.h"
 #include "Trajectory.h"
-#include "Voice.h"
 
+#include "vstgui/lib/cdropsource.h"
 #include "vstgui/lib/cdrawcontext.h"
+#include "vstgui/lib/cfileselector.h"
 #include "vstgui/lib/cgraphicspath.h"
+#include "vstgui/lib/controls/coptionmenu.h"
 #include "vstgui/lib/events.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <limits>
 #include <string>
+#include <thread>
 
 namespace KickDrum::UI {
 namespace {
@@ -31,6 +41,7 @@ constexpr CColor kPitch {249, 158, 13, 255};
 constexpr CColor kPitchFill {105, 65, 8, 100};
 constexpr CColor kAmplitude {35, 214, 224, 255};
 constexpr CColor kAmplitudeFill {5, 92, 99, 105};
+constexpr CColor kReference {179, 130, 224, 255};
 constexpr CColor kRed {229, 62, 55, 255};
 constexpr CColor kKnobFace {24, 27, 28, 255};
 constexpr CColor kKnobEdge {76, 80, 79, 255};
@@ -46,12 +57,15 @@ float clampPlain(KickParameterId id, float plainValue) {
     if (!spec) {
         return plainValue;
     }
+    if (!std::isfinite(plainValue)) {
+        return getDefaultKickParameter(id);
+    }
     return std::clamp(plainValue, spec->minimum, spec->maximum);
 }
 
 float normalizePlain(KickParameterId id, float plainValue) {
     const auto* spec = findKickParameterSpec(id);
-    if (!spec || spec->maximum <= spec->minimum) {
+    if (!spec || spec->maximum <= spec->minimum || !std::isfinite(plainValue)) {
         return 0.0f;
     }
     if (id == KickParameterId::BeaterHardnessHz || id == KickParameterId::AirDecayMs) {
@@ -140,10 +154,11 @@ const char* formatFrequency(float hz, char (&buffer)[32]) {
 const char* formatParameter(KickParameterId id, float plainValue, char (&buffer)[32]) {
     switch (id) {
         case KickParameterId::StrikePosition:
-            std::snprintf(buffer, sizeof(buffer), "%.0f %%", plainValue * 100.0f);
-            break;
+        case KickParameterId::MembraneLevel:
         case KickParameterId::ImpactLevel:
         case KickParameterId::AirLevel:
+        case KickParameterId::SampleLevel:
+        case KickParameterId::Saturation:
             std::snprintf(buffer, sizeof(buffer), "%.0f %%", plainValue * 100.0f);
             break;
         case KickParameterId::AirDecayMs:
@@ -160,6 +175,22 @@ const char* formatParameter(KickParameterId id, float plainValue, char (&buffer)
                               20.0f * std::log10(plainValue));
             }
             break;
+        case KickParameterId::PhaseDegrees:
+            std::snprintf(buffer, sizeof(buffer), "%+.0f deg", plainValue);
+            break;
+        case KickParameterId::PhaseLockMs:
+            if (plainValue < 0.0f) {
+                std::snprintf(buffer, sizeof(buffer), "OFF");
+            } else {
+                std::snprintf(buffer, sizeof(buffer), "%.1f ms", plainValue);
+            }
+            break;
+        case KickParameterId::EqLowDb:
+        case KickParameterId::EqMidDb:
+        case KickParameterId::EqHighDb:
+        case KickParameterId::LimiterCeilingDb:
+            std::snprintf(buffer, sizeof(buffer), "%+.1f dB", plainValue);
+            break;
         default:
             std::snprintf(buffer, sizeof(buffer), "%.2f", plainValue);
             break;
@@ -167,26 +198,104 @@ const char* formatParameter(KickParameterId id, float plainValue, char (&buffer)
     return buffer;
 }
 
+CRect presetButtonRect() { return {22.0, 20.0, 232.0, 49.0}; }
+CRect undoButtonRect() { return {242.0, 20.0, 278.0, 49.0}; }
+CRect redoButtonRect() { return {284.0, 20.0, 320.0, 49.0}; }
+CRect importButtonRect() { return {700.0, 20.0, 782.0, 49.0}; }
+CRect fitButtonRect() { return {790.0, 20.0, 844.0, 49.0}; }
+CRect alignButtonRect() { return {852.0, 20.0, 920.0, 49.0}; }
+CRect exportButtonRect() { return {928.0, 20.0, 1078.0, 49.0}; }
+CRect modelTabRect() { return {28.0, 695.0, 91.0, 716.0}; }
+CRect outputTabRect() { return {96.0, 695.0, 168.0, 716.0}; }
+CRect phaseLockButtonRect() { return {939.0, 87.0, 1027.0, 109.0}; }
+
+std::string withExtension(std::string path, const char* extension) {
+    if (!path.empty() && std::filesystem::path(path).extension().empty()) {
+        path += extension;
+    }
+    return path;
+}
+
+std::string safeSaveStem(const std::string& name) {
+    std::string stem;
+    stem.reserve(name.size());
+    for (const unsigned char character : name) {
+        const bool accepted = (character >= 'a' && character <= 'z') ||
+                              (character >= 'A' && character <= 'Z') ||
+                              (character >= '0' && character <= '9') ||
+                              character == '-' || character == '_';
+        if (accepted) {
+            stem.push_back(static_cast<char>(character));
+        } else if (!stem.empty() && stem.back() != '-') {
+            stem.push_back('-');
+        }
+    }
+    while (!stem.empty() && stem.back() == '-') {
+        stem.pop_back();
+    }
+    return stem.empty() ? "Kiq-Kick" : stem;
+}
+
+void cleanupOldTemporaryExports() {
+    constexpr const char* prefix = "Kiq-Kick-";
+    constexpr const char* extension = ".wav";
+    std::error_code error;
+    const auto directory = std::filesystem::temp_directory_path(error);
+    if (error) {
+        return;
+    }
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (std::filesystem::directory_iterator iterator(directory, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+        const auto filename = iterator->path().filename().string();
+        if (filename.rfind(prefix, 0) != 0 ||
+            iterator->path().extension() != extension) {
+            continue;
+        }
+        const auto modified = iterator->last_write_time(error);
+        if (!error && now - modified > std::chrono::hours(24 * 30)) {
+            std::filesystem::remove(iterator->path(), error);
+        }
+        error.clear();
+    }
+}
+
 } // namespace
 
 KiqMainView::KiqMainView(const CRect& size, KiqUIBridge& bridge)
     : CView(size)
     , bridge_(bridge)
+    , callbackState_(std::make_shared<AsyncCallbackState>())
     , titleFont_(makeOwned<CFontDesc>("Helvetica Neue", 40.0, kBoldFace))
     , sectionFont_(makeOwned<CFontDesc>("Helvetica Neue", 17.0, kBoldFace))
     , labelFont_(makeOwned<CFontDesc>("Helvetica Neue", 11.0, kBoldFace))
     , valueFont_(makeOwned<CFontDesc>("Menlo", 10.5, kNormalFace)) {
+    callbackState_->view.store(this, std::memory_order_release);
     setTransparency(false);
     setMouseEnabled(true);
     setWantsFocus(true);
     syncFromBridge();
+    sampleLayer_ = bridge_.getSampleLayer();
+    bool isDefaultSound = !sampleLayer_;
+    for (const auto& spec : kKickParameterSpecs) {
+        isDefaultSound = isDefaultSound &&
+            std::abs(value(spec.id) - getDefaultKickParameter(spec.id)) <= 1.0e-5f;
+    }
+    presetName_ = isDefaultSound ? "Init — Bass House" : "Host State";
+    history_.reset(currentParams());
     rebuildWaveformPreview();
     timer_ = makeOwned<CVSTGUITimer>([this](CVSTGUITimer*) { timerTick(); }, 33);
 }
 
 KiqMainView::~KiqMainView() noexcept {
+    callbackState_->view.store(nullptr, std::memory_order_release);
     if (timer_) {
         timer_->stop();
+    }
+    // The worker executes analysis code from this module, so it must finish
+    // before a host can unload the editor bundle.
+    if (referenceWorker_.joinable()) {
+        referenceWorker_.join();
     }
     bridge_.setAuditionLoop(false, loopBpm_);
 }
@@ -201,9 +310,65 @@ void KiqMainView::setValue(KickParameterId id, float plainValue) {
         return;
     }
     values_[parameterIndex(id)] = clamped;
+    presetName_ = "Edited";
     waveformDirty_ = true;
     bridge_.performParameterEdit(id, clamped);
     invalid();
+}
+
+KickParams KiqMainView::currentParams() const {
+    KickParams params = kDefaultKickParams;
+    for (const auto& spec : kKickParameterSpecs) {
+        setKickParameter(params, spec.id, value(spec.id));
+    }
+    return sanitizeKickParams(params);
+}
+
+void KiqMainView::applyParams(const KickParams& requestedParams,
+                              bool recordHistory) {
+    const KickParams params = sanitizeKickParams(requestedParams);
+    bool changed = false;
+    for (const auto& spec : kKickParameterSpecs) {
+        const float next = getKickParameter(params, spec.id);
+        if (std::abs(value(spec.id) - next) <= 1.0e-6f) {
+            continue;
+        }
+        bridge_.beginParameterEdit(spec.id);
+        values_[parameterIndex(spec.id)] = next;
+        bridge_.performParameterEdit(spec.id, next);
+        bridge_.endParameterEdit(spec.id);
+        changed = true;
+    }
+    if (!changed) {
+        return;
+    }
+    waveformDirty_ = true;
+    if (recordHistory) {
+        history_.record(params);
+    }
+    invalid();
+}
+
+void KiqMainView::recordCurrentState() {
+    history_.record(currentParams());
+}
+
+void KiqMainView::undo() {
+    KickParams restored;
+    if (history_.undo(restored)) {
+        applyParams(restored, false);
+        presetName_ = "Edited";
+        setStatus("Undo");
+    }
+}
+
+void KiqMainView::redo() {
+    KickParams restored;
+    if (history_.redo(restored)) {
+        applyParams(restored, false);
+        presetName_ = "Edited";
+        setStatus("Redo");
+    }
 }
 
 void KiqMainView::syncFromBridge() {
@@ -220,7 +385,41 @@ void KiqMainView::syncFromBridge() {
     }
 
     if (parametersChanged) {
+        presetName_ = "Host State";
         waveformDirty_ = true;
+        if (drag_.kind == DragKind::None) {
+            const KickParams snapshot = currentParams();
+            bool matchesHistory = true;
+            for (const auto& spec : kKickParameterSpecs) {
+                if (std::abs(getKickParameter(snapshot, spec.id) -
+                             getKickParameter(history_.current(), spec.id)) > 1.0e-5f) {
+                    matchesHistory = false;
+                    break;
+                }
+            }
+            if (!matchesHistory) {
+                history_.reset(snapshot);
+            }
+        }
+    }
+
+    const auto bridgeSampleLayer = bridge_.getSampleLayer();
+    if (bridgeSampleLayer.get() != sampleLayer_.get()) {
+        const bool sameAudio = bridgeSampleLayer && sampleLayer_ &&
+            bridgeSampleLayer->sourceSampleRate == sampleLayer_->sourceSampleRate &&
+            bridgeSampleLayer->samples == sampleLayer_->samples;
+        sampleLayer_ = bridgeSampleLayer;
+        if (!sameAudio) {
+            sampleSourcePath_.clear();
+            referenceAnalysis_.reset();
+            presetName_ = "Host State";
+        }
+        // Samples are not part of KickParamsHistory. A bridge-side sample
+        // replacement therefore establishes a new undo baseline even when
+        // its bytes happen to match the previous allocation.
+        history_.reset(currentParams());
+        waveformDirty_ = true;
+        changed = true;
     }
 
     const float targetPeak = std::clamp(bridge_.getOutputPeak(), 0.0f, 1.0f);
@@ -247,6 +446,11 @@ void KiqMainView::syncFromBridge() {
 
 void KiqMainView::timerTick() {
     syncFromBridge();
+    consumeReferenceImport();
+    if (statusFrames_ > 0 && --statusFrames_ == 0) {
+        statusMessage_.clear();
+        invalid();
+    }
     // Long (up to two-second) previews are intentionally rebuilt after a drag
     // settles, keeping trajectory and knob interaction responsive.
     if (waveformDirty_ && drag_.kind == DragKind::None) {
@@ -256,40 +460,31 @@ void KiqMainView::timerTick() {
 }
 
 void KiqMainView::rebuildWaveformPreview() {
-    constexpr float previewSampleRate = 48000.0f;
-
-    KickParams params = kDefaultKickParams;
-    for (const auto& spec : kKickParameterSpecs) {
-        setKickParameter(params, spec.id, value(spec.id));
-    }
-    params = sanitizeKickParams(params);
-
-    waveformDurationMs_ = std::max(
-        params.amplitude.back().timeMs + Voice::kTailFadeMs,
-        params.transient.airDecayMs);
-    const std::size_t sampleCount = std::max<std::size_t>(
-        2, static_cast<std::size_t>(std::ceil(
-               waveformDurationMs_ * previewSampleRate / 1000.0f)) + 1);
+    constexpr std::uint32_t previewSampleRate = 48000;
+    const KickParams params = currentParams();
+    KickRenderSettings settings;
+    settings.sampleRate = previewSampleRate;
+    settings.sampleLayer = sampleLayer_.get();
+    const std::vector<float> rendered =
+        KickWavExporter::renderMono(params, settings);
+    const std::size_t sampleCount = std::max<std::size_t>(2, rendered.size());
+    waveformDurationMs_ = static_cast<float>(sampleCount) * 1000.0f /
+                          static_cast<float>(previewSampleRate);
     waveformBinsUsed_ = std::min(kWaveformBinCount, sampleCount);
     std::fill(waveformSamples_.begin(), waveformSamples_.end(), 0.0f);
     std::fill(tuningSamplesHz_.begin(), tuningSamplesHz_.end(), 0.0f);
-
-    Voice voice;
-    voice.initialize(previewSampleRate);
-    voice.setParams(params);
-    voice.trigger(36, 1.0f);
     waveformPeak_ = 0.0f;
 
     for (std::size_t sample = 0; sample < sampleCount; ++sample) {
-        const float rendered = DSPUtils::softClip(voice.renderSample());
-        waveformPeak_ = std::max(waveformPeak_, std::abs(rendered));
+        const float renderedSample = sample < rendered.size() ? rendered[sample] : 0.0f;
+        waveformPeak_ = std::max(waveformPeak_, std::abs(renderedSample));
         const std::size_t bin = std::min(
             waveformBinsUsed_ - 1, sample * waveformBinsUsed_ / sampleCount);
         // Keep the strongest sample in each pixel-width time bucket. This
         // preserves the short impact and body peaks while still drawing a
         // single, unfilled waveform line.
-        if (std::abs(rendered) > std::abs(waveformSamples_[bin])) {
-            waveformSamples_[bin] = rendered;
+        if (std::abs(renderedSample) > std::abs(waveformSamples_[bin])) {
+            waveformSamples_[bin] = renderedSample;
         }
     }
 
@@ -350,13 +545,51 @@ void KiqMainView::drawBackground(CDrawContext& context) {
     for (int y = 6; y < static_cast<int>(kDesignHeight); y += 4) {
         context.drawLine(CPoint(8.0, y), CPoint(kDesignWidth - 8.0, y));
     }
+    if (dropHover_) {
+        CRect target = bounds;
+        target.inset(9.0, 9.0);
+        fillRoundedRect(context, target, 15.0, CColor(20, 45, 47, 45),
+                        kAmplitude, 2.0);
+    }
 }
 
 void KiqMainView::drawHeader(CDrawContext& context) {
-    drawText(context, titleFont_, 40.0, kText, "K I Q",
-             CRect(0.0, 8.0, kDesignWidth, 54.0), kCenterText, kBoldFace);
-    drawText(context, labelFont_, 11.0, kText, "K I C K   D E S I G N E R",
-             CRect(0.0, 52.0, kDesignWidth, 72.0), kCenterText, kBoldFace);
+    drawText(context, titleFont_, 32.0, kText, "K I Q",
+             CRect(330.0, 4.0, 690.0, 42.0), kCenterText, kBoldFace);
+    drawText(context, labelFont_, 9.5, kText, "P H Y S I C A L   K I C K   D E S I G N E R",
+             CRect(320.0, 39.0, 700.0, 55.0), kCenterText, kBoldFace);
+
+    std::string presetLabel = "PRESET  " + presetName_;
+    if (presetLabel.size() > 27) {
+        presetLabel.resize(26);
+        presetLabel += "…";
+    }
+    drawWorkflowButton(context, presetButtonRect(), presetLabel.c_str());
+    drawWorkflowButton(context, undoButtonRect(), "<", history_.canUndo());
+    drawWorkflowButton(context, redoButtonRect(), ">", history_.canRedo());
+    drawWorkflowButton(context, importButtonRect(), "IMPORT");
+    drawWorkflowButton(context, fitButtonRect(), "FIT", referenceAnalysis_.has_value());
+    drawWorkflowButton(context, alignButtonRect(), "ALIGN", referenceAnalysis_.has_value());
+    drawWorkflowButton(context, exportButtonRect(), "EXPORT / DRAG", true, true);
+
+    const char* status = statusMessage_.empty()
+                             ? "DROP A WAV ANYWHERE TO MATCH IT"
+                             : statusMessage_.c_str();
+    drawText(context, valueFont_, 8.5,
+             statusMessage_.empty() ? kMutedText : kAmplitude,
+             status, CRect(300.0, 57.0, 800.0, 70.0), kCenterText);
+}
+
+void KiqMainView::drawWorkflowButton(CDrawContext& context,
+                                     const CRect& rect, const char* label,
+                                     bool active, bool accent) {
+    const CColor edge = !active ? CColor(45, 48, 48, 255)
+                                : (accent ? kAmplitude : CColor(78, 82, 81, 255));
+    const CColor text = !active ? CColor(82, 85, 83, 255)
+                                : (accent ? kAmplitude : kText);
+    fillRoundedRect(context, rect, 5.0, CColor(14, 17, 18, 255), edge,
+                    accent ? 1.6 : 1.0);
+    drawText(context, labelFont_, 8.6, text, label, rect, kCenterText, kBoldFace);
 }
 
 CRect KiqMainView::trajectoryPanel(TrajectoryKind kind) const {
@@ -488,6 +721,12 @@ void KiqMainView::drawTrajectory(CDrawContext& context, TrajectoryKind kind) {
              pitch ? "MEMBRANE TENSION" : "ENERGY DECAY",
              CRect(42.0, panel.top + 10.0, 290.0, panel.top + 34.0),
              kLeftText, kBoldFace);
+    if (pitch) {
+        const bool locked = value(KickParameterId::PhaseLockMs) >= 0.0f;
+        drawWorkflowButton(context, phaseLockButtonRect(),
+                           locked ? "PHASE LOCK  ON" : "PHASE LOCK  OFF",
+                           true, locked);
+    }
 
     context.setFrameColor(kGrid);
     context.setLineWidth(1.0);
@@ -498,6 +737,23 @@ void KiqMainView::drawTrajectory(CDrawContext& context, TrajectoryKind kind) {
     for (int line = 0; line <= 6; ++line) {
         const double y = graph.top + graph.getHeight() * line / 6.0;
         context.drawLine(CPoint(graph.left, y), CPoint(graph.right, y));
+    }
+
+    if (pitch && value(KickParameterId::PhaseLockMs) >= 0.0f) {
+        const float lockMs = value(KickParameterId::PhaseLockMs);
+        const double x = graph.left + graph.getWidth() *
+            std::clamp(lockMs / trajectoryTimeMax(kind), 0.0f, 1.0f);
+        context.setFrameColor(kReference);
+        context.setLineWidth(1.5);
+        context.drawLine(CPoint(x, graph.top), CPoint(x, graph.bottom));
+        context.setFillColor(kReference);
+        context.drawEllipse(CRect(x - 4.0, graph.top - 4.0,
+                                  x + 4.0, graph.top + 4.0), kDrawFilled);
+        char lockBuffer[32] {};
+        formatTime(lockMs, lockBuffer);
+        drawText(context, valueFont_, 8.2, kReference, lockBuffer,
+                 CRect(x - 36.0, graph.top + 3.0, x + 36.0, graph.top + 17.0),
+                 kCenterText);
     }
 
     char scaleBuffer[32] {};
@@ -638,6 +894,14 @@ void KiqMainView::drawWaveformPreview(CDrawContext& context) {
     }
     drawText(context, valueFont_, 9.0, kPitch, tuningBuffer,
              CRect(255.0, 540.0, 460.0, 558.0), kLeftText, kBoldFace);
+    if (referenceAnalysis_) {
+        char referenceBuffer[48] {};
+        std::snprintf(referenceBuffer, sizeof(referenceBuffer),
+                      "REFERENCE  %.0f%% MATCH",
+                      referenceAnalysis_->fit.fitConfidence * 100.0f);
+        drawText(context, valueFont_, 9.0, kReference, referenceBuffer,
+                 CRect(462.0, 540.0, 650.0, 558.0), kLeftText, kBoldFace);
+    }
 
     const CRect graph(42.0, 562.0, 820.0, 653.0);
     fillRoundedRect(context, graph, 5.0, CColor(7, 10, 11, 255),
@@ -669,15 +933,83 @@ void KiqMainView::drawWaveformPreview(CDrawContext& context) {
              CRect(47.0, tuningLane.top + 8.0, 83.0, tuningLane.top + 22.0),
              kLeftText, kBoldFace);
 
+    const float referenceDurationMs = referenceAnalysis_
+                                          ? referenceAnalysis_->activeDurationMs
+                                          : 0.0f;
+    const float displayDurationMs = std::max(
+        1.0f, std::max(waveformDurationMs_, referenceDurationMs));
+
+    if (referenceAnalysis_ && !referenceAnalysis_->waveform.empty()) {
+        const float referenceScale = referenceAnalysis_->sourcePeak > 1.0e-6f
+                                         ? 0.92f / referenceAnalysis_->sourcePeak
+                                         : 1.0f;
+        auto referenceWaveformPath = owned(context.createGraphicsPath());
+        auto referencePitchPath = owned(context.createGraphicsPath());
+        if (referenceWaveformPath) {
+            bool first = true;
+            for (const auto& point : referenceAnalysis_->waveform) {
+                const double x = plot.left + plot.getWidth() *
+                    std::clamp(point.timeMs / displayDurationMs, 0.0f, 1.0f);
+                const CPoint graphPoint(
+                    x, waveformCenterY - point.sample * referenceScale *
+                                           waveformLane.getHeight() * 0.45);
+                if (first) {
+                    referenceWaveformPath->beginSubpath(graphPoint);
+                    first = false;
+                } else {
+                    referenceWaveformPath->addLine(graphPoint);
+                }
+            }
+            context.setFrameColor(CColor(kReference.red, kReference.green,
+                                         kReference.blue, 145));
+            context.setLineWidth(1.0);
+            context.drawGraphicsPath(referenceWaveformPath,
+                                     CDrawContext::kPathStroked);
+        }
+        if (referencePitchPath && !referenceAnalysis_->pitch.empty()) {
+            bool first = true;
+            for (const auto& point : referenceAnalysis_->pitch) {
+                if (point.hertz <= 0.0f || point.confidence < 0.08f) {
+                    first = true;
+                    continue;
+                }
+                const double x = plot.left + plot.getWidth() *
+                    std::clamp(point.timeMs / displayDurationMs, 0.0f, 1.0f);
+                constexpr float minimumPitchHz = 20.0f;
+                constexpr float maximumPitchHz = 1000.0f;
+                const float pitchHz = std::clamp(
+                    point.hertz, minimumPitchHz, maximumPitchHz);
+                const float normalized =
+                    (std::log(pitchHz) - std::log(minimumPitchHz)) /
+                    (std::log(maximumPitchHz) - std::log(minimumPitchHz));
+                const CPoint graphPoint(
+                    x, tuningLane.bottom - normalized * tuningLane.getHeight());
+                if (first) {
+                    referencePitchPath->beginSubpath(graphPoint);
+                    first = false;
+                } else {
+                    referencePitchPath->addLine(graphPoint);
+                }
+            }
+            context.setFrameColor(CColor(kReference.red, kReference.green,
+                                         kReference.blue, 190));
+            context.setLineWidth(1.3);
+            context.drawGraphicsPath(referencePitchPath,
+                                     CDrawContext::kPathStroked);
+        }
+    }
+
     if (waveformBinsUsed_ > 1) {
         const double waveformHalfHeight = waveformLane.getHeight() * 0.45;
         auto waveformPath = owned(context.createGraphicsPath());
         auto tuningPath = owned(context.createGraphicsPath());
         if (waveformPath && tuningPath) {
             for (std::size_t bin = 0; bin < waveformBinsUsed_; ++bin) {
-                const double x = plot.left + plot.getWidth() *
+                const double timeMs = waveformDurationMs_ *
                     static_cast<double>(bin) /
                     static_cast<double>(waveformBinsUsed_ - 1);
+                const double x = plot.left + plot.getWidth() *
+                    std::clamp(timeMs / displayDurationMs, 0.0, 1.0);
                 const CPoint waveformPoint(
                     x, waveformCenterY - waveformSamples_[bin] * waveformHalfHeight);
 
@@ -709,7 +1041,7 @@ void KiqMainView::drawWaveformPreview(CDrawContext& context) {
     }
 
     char durationBuffer[32] {};
-    formatTime(waveformDurationMs_, durationBuffer);
+    formatTime(displayDurationMs, durationBuffer);
     drawText(context, valueFont_, 8.8, kMutedText, "0 ms",
              CRect(graph.left, 655.0, graph.left + 64.0, 672.0), kLeftText);
     drawText(context, valueFont_, 8.8, kMutedText, durationBuffer,
@@ -788,21 +1120,33 @@ void KiqMainView::drawLoopControls(CDrawContext& context) {
     drawText(context, valueFont_, 9.5, kAmplitude, bpmBuffer, valueRect, kCenterText);
 }
 
-const std::array<KickParameterId, 6>& KiqMainView::knobParameterIds() {
-    static constexpr std::array<KickParameterId, 6> ids {
-        KickParameterId::StrikePosition,
-        KickParameterId::ImpactLevel,
-        KickParameterId::AirLevel,
-        KickParameterId::AirDecayMs,
-        KickParameterId::BeaterHardnessHz,
-        KickParameterId::OutputGain,
-    };
-    return ids;
+const std::array<KiqMainView::KnobDefinition, 8>&
+KiqMainView::knobDefinitions() const {
+    static const std::array<KnobDefinition, 8> model {{
+        {KickParameterId::MembraneLevel, {66.0, 773.0}, "MEMBRANE", 28.0},
+        {KickParameterId::ImpactLevel, {166.0, 773.0}, "IMPACT", 28.0},
+        {KickParameterId::AirLevel, {266.0, 773.0}, "AIR", 28.0},
+        {KickParameterId::SampleLevel, {366.0, 773.0}, "SAMPLE", 28.0},
+        {KickParameterId::StrikePosition, {718.0, 773.0}, "STRIKE", 28.0},
+        {KickParameterId::PhaseDegrees, {814.0, 773.0}, "PHASE", 28.0},
+        {KickParameterId::AirDecayMs, {910.0, 773.0}, "AIR DECAY", 28.0},
+        {KickParameterId::BeaterHardnessHz, {1006.0, 773.0}, "BEATER", 28.0},
+    }};
+    static const std::array<KnobDefinition, 8> output {{
+        {KickParameterId::EqLowDb, {100.0, 773.0}, "LOW EQ", 31.0},
+        {KickParameterId::EqMidDb, {235.0, 773.0}, "MID EQ", 31.0},
+        {KickParameterId::EqHighDb, {370.0, 773.0}, "HIGH EQ", 31.0},
+        {KickParameterId::Saturation, {730.0, 773.0}, "SATURATION", 31.0},
+        {KickParameterId::LimiterCeilingDb, {865.0, 773.0}, "LIMIT", 31.0},
+        {KickParameterId::OutputGain, {1000.0, 773.0}, "OUTPUT", 31.0},
+        {KickParameterId::OutputGain, {}, "", 0.0},
+        {KickParameterId::OutputGain, {}, "", 0.0},
+    }};
+    return controlPage_ == ControlPage::Model ? model : output;
 }
 
-std::array<CPoint, 6> KiqMainView::knobCenters() const {
-    return {CPoint(96.0, 767.0), CPoint(244.0, 767.0), CPoint(392.0, 767.0),
-            CPoint(708.0, 767.0), CPoint(836.0, 767.0), CPoint(995.0, 767.0)};
+std::size_t KiqMainView::knobCount() const {
+    return controlPage_ == ControlPage::Model ? 8u : 6u;
 }
 
 void KiqMainView::drawControls(CDrawContext& context) {
@@ -812,13 +1156,27 @@ void KiqMainView::drawControls(CDrawContext& context) {
     inner.inset(4.0, 4.0);
     fillRoundedRect(context, inner, 9.0, CColor(17, 20, 21, 255), kPanelInner, 1.0);
 
-    static constexpr std::array<const char*, 6> labels {
-        "STRIKE POS", "IMPACT", "AIR", "AIR DECAY", "BEATER", "OUTPUT",
-    };
-    const auto centers = knobCenters();
-    const auto& ids = knobParameterIds();
-    for (std::size_t index = 0; index < ids.size(); ++index) {
-        drawKnob(context, ids[index], centers[index], index == 5 ? 49.0 : 37.0, labels[index]);
+    drawWorkflowButton(context, modelTabRect(), "MODEL", true,
+                       controlPage_ == ControlPage::Model);
+    drawWorkflowButton(context, outputTabRect(), "OUTPUT", true,
+                       controlPage_ == ControlPage::Output);
+    if (sampleLayer_) {
+        std::string sampleLabel = "SAMPLE READY";
+        if (!sampleSourcePath_.empty()) {
+            sampleLabel += "  " + std::filesystem::path(sampleSourcePath_).filename().string();
+        }
+        if (sampleLabel.size() > 38) {
+            sampleLabel.resize(37);
+            sampleLabel += "…";
+        }
+        drawText(context, valueFont_, 8.3, kReference, sampleLabel.c_str(),
+                 CRect(178.0, 697.0, 450.0, 713.0), kLeftText);
+    }
+
+    const auto& definitions = knobDefinitions();
+    for (std::size_t index = 0; index < knobCount(); ++index) {
+        const auto& knob = definitions[index];
+        drawKnob(context, knob.id, knob.center, knob.radius, knob.label);
     }
     drawHitButton(context);
     drawMeter(context);
@@ -831,8 +1189,8 @@ void KiqMainView::drawKnob(CDrawContext& context, KickParameterId id,
     const double sweep = 270.0;
     const double angle = (startAngle + sweep * normalized) * kPi / 180.0;
 
-    drawText(context, labelFont_, 10.5, kText, label,
-             CRect(center.x - 65.0, 704.0, center.x + 65.0, 721.0),
+    drawText(context, labelFont_, 9.0, kText, label,
+             CRect(center.x - 48.0, 719.0, center.x + 48.0, 734.0),
              kCenterText, kBoldFace);
 
     CRect outer(center.x - radius - 5.0, center.y - radius - 5.0,
@@ -867,9 +1225,9 @@ void KiqMainView::drawKnob(CDrawContext& context, KickParameterId id,
 
     char valueBuffer[32] {};
     formatParameter(id, value(id), valueBuffer);
-    const double width = radius > 40.0 ? 90.0 : 78.0;
-    const CRect valueRect(center.x - width * 0.5, 821.0,
-                          center.x + width * 0.5, 841.0);
+    const double width = 78.0;
+    const CRect valueRect(center.x - width * 0.5, 817.0,
+                          center.x + width * 0.5, 837.0);
     fillRoundedRect(context, valueRect, 4.0, CColor(10, 13, 14, 255),
                     CColor(51, 56, 56, 255), 1.0);
     drawText(context, valueFont_, 10.0, kAmplitude, valueBuffer, valueRect, kCenterText);
@@ -893,7 +1251,7 @@ void KiqMainView::drawHitButton(CDrawContext& context) {
 void KiqMainView::drawMeter(CDrawContext& context) {
     context.setFrameColor(CColor(74, 78, 77, 255));
     context.setLineWidth(1.0);
-    context.drawLine(CPoint(925.0, 708.0), CPoint(925.0, 836.0));
+    context.drawLine(CPoint(1048.0, 718.0), CPoint(1048.0, 836.0));
 
     drawText(context, labelFont_, 9.0, clipHoldFrames_ > 0 ? kRed : kMutedText, "CLIP",
              CRect(1060.0, 708.0, 1090.0, 722.0), kCenterText, kBoldFace);
@@ -993,18 +1351,19 @@ bool KiqMainView::beginCurveDrag(const CPoint& where) {
 }
 
 bool KiqMainView::beginKnobDrag(const CPoint& where, bool resetToDefault) {
-    const auto centers = knobCenters();
-    const auto& ids = knobParameterIds();
-    for (std::size_t index = 0; index < ids.size(); ++index) {
-        const float radius = index == 5 ? 58.0f : 48.0f;
-        if (distanceSquared(where, centers[index]) > radius * radius) {
+    const auto& definitions = knobDefinitions();
+    for (std::size_t index = 0; index < knobCount(); ++index) {
+        const auto& knob = definitions[index];
+        const float hitRadius = static_cast<float>(knob.radius + 12.0);
+        if (distanceSquared(where, knob.center) > hitRadius * hitRadius) {
             continue;
         }
-        const KickParameterId id = ids[index];
+        const KickParameterId id = knob.id;
         if (resetToDefault) {
             bridge_.beginParameterEdit(id);
             setValue(id, getDefaultKickParameter(id));
             bridge_.endParameterEdit(id);
+            recordCurrentState();
             return true;
         }
         drag_ = {};
@@ -1038,6 +1397,94 @@ bool KiqMainView::beginTempoDrag(const CPoint& where, bool resetToDefault) {
     return true;
 }
 
+bool KiqMainView::beginPhaseLockDrag(const CPoint& where) {
+    const float lockMs = value(KickParameterId::PhaseLockMs);
+    if (lockMs < 0.0f) {
+        return false;
+    }
+    const CRect graph = trajectoryGraph(TrajectoryKind::Pitch);
+    const float timeMax = trajectoryTimeMax(TrajectoryKind::Pitch);
+    const double x = graph.left + graph.getWidth() *
+        std::clamp(lockMs / timeMax, 0.0f, 1.0f);
+    if (where.y < graph.top - 8.0 || where.y > graph.bottom + 8.0 ||
+        std::abs(where.x - x) > 10.0) {
+        return false;
+    }
+    drag_ = {};
+    drag_.kind = DragKind::PhaseLock;
+    drag_.startMouse = where;
+    drag_.startValue = lockMs;
+    drag_.frozenTimeMax = timeMax;
+    drag_.parameterIds = {KickParameterId::PhaseLockMs};
+    bridge_.beginParameterEdit(KickParameterId::PhaseLockMs);
+    return true;
+}
+
+bool KiqMainView::handleWorkflowButton(const CPoint& where) {
+    if (presetButtonRect().pointInside(where)) {
+        showPresetMenu();
+        return true;
+    }
+    if (undoButtonRect().pointInside(where)) {
+        undo();
+        return true;
+    }
+    if (redoButtonRect().pointInside(where)) {
+        redo();
+        return true;
+    }
+    if (importButtonRect().pointInside(where)) {
+        openReferenceSelector();
+        return true;
+    }
+    if (fitButtonRect().pointInside(where)) {
+        if (referenceAnalysis_) {
+            applyReferenceFit();
+        }
+        return true;
+    }
+    if (alignButtonRect().pointInside(where)) {
+        if (referenceAnalysis_) {
+            alignReferencePhase();
+        }
+        return true;
+    }
+    if (exportButtonRect().pointInside(where)) {
+        drag_ = {};
+        drag_.kind = DragKind::Export;
+        drag_.startMouse = where;
+        return true;
+    }
+    if (phaseLockButtonRect().pointInside(where)) {
+        const auto id = KickParameterId::PhaseLockMs;
+        const float next = value(id) >= 0.0f
+                               ? -1.0f
+                               : (referenceAnalysis_
+                                      ? referenceAnalysis_->fit.phaseReferenceTimeMs
+                                      : value(KickParameterId::Pitch1TimeMs));
+        bridge_.beginParameterEdit(id);
+        setValue(id, next);
+        bridge_.endParameterEdit(id);
+        recordCurrentState();
+        return true;
+    }
+    return false;
+}
+
+bool KiqMainView::handleControlPageButton(const CPoint& where) {
+    if (modelTabRect().pointInside(where)) {
+        controlPage_ = ControlPage::Model;
+        invalid();
+        return true;
+    }
+    if (outputTabRect().pointInside(where)) {
+        controlPage_ = ControlPage::Output;
+        invalid();
+        return true;
+    }
+    return false;
+}
+
 bool KiqMainView::handleHitButton(const CPoint& where) {
     if (!CRect(493.0, 714.0, 607.0, 820.0).pointInside(where)) {
         return false;
@@ -1061,9 +1508,12 @@ void KiqMainView::onMouseDownEvent(MouseDownEvent& event) {
         return;
     }
     const bool doubleClick = event.clickCount >= 2;
-    if (handleHitButton(event.mousePosition) ||
+    if (handleWorkflowButton(event.mousePosition) ||
+        handleControlPageButton(event.mousePosition) ||
+        handleHitButton(event.mousePosition) ||
         handleLoopButton(event.mousePosition) ||
         beginTempoDrag(event.mousePosition, doubleClick) ||
+        beginPhaseLockDrag(event.mousePosition) ||
         beginPointDrag(event.mousePosition) ||
         beginCurveDrag(event.mousePosition) ||
         beginKnobDrag(event.mousePosition, doubleClick)) {
@@ -1076,6 +1526,9 @@ void KiqMainView::updateDrag(const CPoint& where, bool fineAdjustment) {
         return;
     }
     const float sensitivity = fineAdjustment ? 0.15f : 1.0f;
+    if (drag_.kind == DragKind::Export) {
+        return;
+    }
     if (drag_.kind == DragKind::Tempo) {
         const float delta = static_cast<float>((drag_.lastMouse.y - where.y) / 220.0) *
                             200.0f * sensitivity;
@@ -1090,6 +1543,15 @@ void KiqMainView::updateDrag(const CPoint& where, bool fineAdjustment) {
                             sensitivity;
         setValue(id, denormalizePlain(id, currentNormalized + delta));
         drag_.lastMouse = where;
+        return;
+    }
+    if (drag_.kind == DragKind::PhaseLock) {
+        const CRect graph = trajectoryGraph(TrajectoryKind::Pitch);
+        const float normalized = std::clamp(
+            static_cast<float>((where.x - graph.left) / graph.getWidth()),
+            0.0f, 1.0f);
+        setValue(KickParameterId::PhaseLockMs,
+                 normalized * drag_.frozenTimeMax);
         return;
     }
     if (drag_.kind == DragKind::Curve) {
@@ -1154,15 +1616,28 @@ void KiqMainView::onMouseMoveEvent(MouseMoveEvent& event) {
     if (drag_.kind == DragKind::None || !event.buttonState.isLeft()) {
         return;
     }
+    if (drag_.kind == DragKind::Export) {
+        if (VSTGUI::shouldStartDrag(drag_.startMouse, event.mousePosition)) {
+            drag_ = {};
+            startExportDrag();
+        }
+        event.consumed = true;
+        return;
+    }
     updateDrag(event.mousePosition, event.modifiers.has(ModifierKey::Shift));
     event.consumed = true;
 }
 
 void KiqMainView::endDrag() {
+    const DragKind completedKind = drag_.kind;
     for (const auto id : drag_.parameterIds) {
         bridge_.endParameterEdit(id);
     }
     drag_ = {};
+    if (completedKind == DragKind::Point || completedKind == DragKind::Curve ||
+        completedKind == DragKind::Knob || completedKind == DragKind::PhaseLock) {
+        recordCurrentState();
+    }
 }
 
 void KiqMainView::cancelDrag() {
@@ -1172,13 +1647,18 @@ void KiqMainView::cancelDrag() {
         setValue(drag_.parameterIds.front(), drag_.startValue);
     } else if (drag_.kind == DragKind::Curve && !drag_.parameterIds.empty()) {
         setValue(drag_.parameterIds.front(), drag_.startCurve);
+    } else if (drag_.kind == DragKind::PhaseLock) {
+        setValue(KickParameterId::PhaseLockMs, drag_.startValue);
     } else if (drag_.kind == DragKind::Point && !drag_.parameterIds.empty()) {
         setValue(drag_.parameterIds.front(), drag_.startValue);
         if (drag_.parameterIds.size() > 1) {
             setValue(drag_.parameterIds[1], drag_.startTime);
         }
     }
-    endDrag();
+    for (const auto id : drag_.parameterIds) {
+        bridge_.endParameterEdit(id);
+    }
+    drag_ = {};
 }
 
 void KiqMainView::onMouseUpEvent(MouseUpEvent& event) {
@@ -1186,6 +1666,12 @@ void KiqMainView::onMouseUpEvent(MouseUpEvent& event) {
         hitPressed_ = false;
         invalid();
         event.consumed = true;
+    }
+    if (drag_.kind == DragKind::Export) {
+        drag_ = {};
+        openExportSelector();
+        event.consumed = true;
+        return;
     }
     if (drag_.kind != DragKind::None) {
         endDrag();
@@ -1213,26 +1699,530 @@ void KiqMainView::onMouseWheelEvent(MouseWheelEvent& event) {
         return;
     }
 
-    const auto centers = knobCenters();
-    const auto& ids = knobParameterIds();
-    for (std::size_t index = 0; index < ids.size(); ++index) {
-        const float radius = index == 5 ? 58.0f : 48.0f;
-        if (distanceSquared(event.mousePosition, centers[index]) > radius * radius) {
+    const auto& definitions = knobDefinitions();
+    for (std::size_t index = 0; index < knobCount(); ++index) {
+        const auto& knob = definitions[index];
+        const float hitRadius = static_cast<float>(knob.radius + 12.0);
+        if (distanceSquared(event.mousePosition, knob.center) >
+            hitRadius * hitRadius) {
             continue;
         }
-        const KickParameterId id = ids[index];
+        const KickParameterId id = knob.id;
         const float increment = event.modifiers.has(ModifierKey::Shift) ? 0.002f : 0.015f;
         bridge_.beginParameterEdit(id);
         setValue(id, denormalizePlain(id, normalizePlain(id, value(id)) +
                                              static_cast<float>(event.deltaY) * increment));
         bridge_.endParameterEdit(id);
+        recordCurrentState();
         event.consumed = true;
         return;
     }
 }
 
+void KiqMainView::setStatus(std::string message) {
+    statusMessage_ = std::move(message);
+    statusFrames_ = 180;
+    invalid();
+}
+
+void KiqMainView::showPresetMenu() {
+    auto menu = makeOwned<COptionMenu>();
+    menu->setStyle(COptionMenu::kPopupStyle);
+    const auto& presets = factoryPresets();
+    for (std::size_t index = 0; index < presets.size(); ++index) {
+        auto* item = new CMenuItem(presets[index].name.c_str(),
+                                   static_cast<int32_t>(1000 + index));
+        item->setChecked(presets[index].name == presetName_);
+        menu->addEntry(item);
+    }
+    menu->addSeparator();
+    menu->addEntry(new CMenuItem("Save Preset…", 2000));
+    menu->addEntry(new CMenuItem("Load Preset…", 2001));
+
+    CPoint location = presetButtonRect().getBottomLeft();
+    localToFrame(location);
+    menu->popup(getFrame(), location,
+                [state = callbackState_](COptionMenu* selectedMenu) {
+        auto* self = state->view.load(std::memory_order_acquire);
+        if (!self) {
+            return;
+        }
+        const auto result = selectedMenu->getLastResult();
+        if (result < 0) {
+            return;
+        }
+        const auto* item = selectedMenu->getEntry(result);
+        if (!item) {
+            return;
+        }
+        const int32_t tag = item->getTag();
+        if (tag >= 1000 && tag < 2000) {
+            self->applyFactoryPreset(static_cast<std::size_t>(tag - 1000));
+        } else if (tag == 2000) {
+            self->openPresetSaveSelector();
+        } else if (tag == 2001) {
+            self->openPresetLoadSelector();
+        }
+    });
+}
+
+void KiqMainView::applyFactoryPreset(std::size_t index) {
+    const auto& presets = factoryPresets();
+    if (index >= presets.size()) {
+        return;
+    }
+    presetName_ = presets[index].name;
+    applyParams(presets[index].params);
+    setStatus("Loaded factory preset: " + presetName_);
+}
+
+void KiqMainView::openPresetSaveSelector() {
+    auto selector = owned(CNewFileSelector::create(
+        getFrame(), CNewFileSelector::Style::kSelectSaveFile));
+    if (!selector) {
+        setStatus("Could not open the preset save dialog");
+        return;
+    }
+    selector->setTitle("Save Kiq Preset");
+    selector->setDefaultSaveName(
+        (safeSaveStem(presetName_) + KickPresetIO::kFileExtension).c_str());
+    selector->setDefaultExtension(
+        CFileExtension("Kiq Preset", "kiqpreset", "application/json"));
+    const bool started = selector->run([state = callbackState_](CNewFileSelector* result) {
+        auto* self = state->view.load(std::memory_order_acquire);
+        if (!self) {
+            return;
+        }
+        if (result->getNumSelectedFiles() == 0) {
+            return;
+        }
+        const auto* selected = result->getSelectedFile(0);
+        if (selected) {
+            self->savePreset(withExtension(selected, KickPresetIO::kFileExtension));
+        }
+    });
+    if (!started) {
+        // Balance CNewFileSelector::run()'s internal remember() when the
+        // platform declines to start and therefore cannot invoke its callback.
+        selector->forget();
+        setStatus("Could not open the preset save dialog");
+    }
+}
+
+void KiqMainView::openPresetLoadSelector() {
+    auto selector = owned(CNewFileSelector::create(
+        getFrame(), CNewFileSelector::Style::kSelectFile));
+    if (!selector) {
+        setStatus("Could not open the preset load dialog");
+        return;
+    }
+    selector->setTitle("Load Kiq Preset");
+    selector->setAllowMultiFileSelection(false);
+    selector->addFileExtension(
+        CFileExtension("Kiq Preset", "kiqpreset", "application/json"));
+    const bool started = selector->run([state = callbackState_](CNewFileSelector* result) {
+        auto* self = state->view.load(std::memory_order_acquire);
+        if (!self) {
+            return;
+        }
+        if (result->getNumSelectedFiles() == 0) {
+            return;
+        }
+        const auto* selected = result->getSelectedFile(0);
+        if (selected) {
+            self->loadPreset(selected);
+        }
+    });
+    if (!started) {
+        selector->forget();
+        setStatus("Could not open the preset load dialog");
+    }
+}
+
+void KiqMainView::savePreset(const std::string& path) {
+    KickPresetDocument preset;
+    const std::string filenameStem = std::filesystem::path(path).stem().string();
+    preset.name = filenameStem.empty() ? presetName_ : filenameStem;
+    preset.params = currentParams();
+    if (sampleLayer_) {
+        KickSamplePayload payload;
+        payload.sourcePath = sampleSourcePath_;
+        payload.audio = *sampleLayer_;
+        preset.sampleLayer = std::move(payload);
+    }
+    std::string error;
+    if (!KickPresetIO::saveToFile(path, preset, &error)) {
+        setStatus("Preset save failed: " + error);
+        return;
+    }
+    presetName_ = preset.name;
+    setStatus("Saved preset: " + std::filesystem::path(path).filename().string());
+}
+
+void KiqMainView::loadPreset(const std::string& path) {
+    KickPresetDocument preset;
+    std::string error;
+    if (!KickPresetIO::loadFromFile(path, preset, &error)) {
+        setStatus("Preset load failed: " + error);
+        return;
+    }
+    presetName_ = preset.name;
+    referenceAnalysis_.reset();
+    sampleSourcePath_.clear();
+    if (preset.sampleLayer) {
+        sampleSourcePath_ = preset.sampleLayer->sourcePath;
+        if (!preset.sampleLayer->audio.samples.empty()) {
+            sampleLayer_ = std::make_shared<SampleLayerData>(
+                std::move(preset.sampleLayer->audio));
+        } else {
+            sampleLayer_.reset();
+        }
+    } else {
+        sampleLayer_.reset();
+    }
+    installSampleLayer(sampleLayer_);
+    applyParams(preset.params, false);
+    history_.reset(currentParams());
+    waveformDirty_ = true;
+    setStatus("Loaded preset: " + presetName_);
+}
+
+void KiqMainView::installSampleLayer(
+    std::shared_ptr<const SampleLayerData> sampleLayer) {
+    sampleLayer_ = std::move(sampleLayer);
+    bridge_.setSampleLayer(sampleLayer_);
+    // The standalone engine sanitizes into its own immutable allocation;
+    // controllers can retain the supplied allocation. In either case, keep
+    // preview/export on the same authoritative source used by the bridge.
+    sampleLayer_ = bridge_.getSampleLayer();
+    waveformDirty_ = true;
+}
+
+void KiqMainView::openReferenceSelector() {
+    auto selector = owned(CNewFileSelector::create(
+        getFrame(), CNewFileSelector::Style::kSelectFile));
+    if (!selector) {
+        setStatus("Could not open the WAV import dialog");
+        return;
+    }
+    selector->setTitle("Import WAV Reference");
+    selector->setAllowMultiFileSelection(false);
+    selector->addFileExtension(
+        CFileExtension("WAVE Audio", "wav", "audio/wav"));
+    const bool started = selector->run([state = callbackState_](CNewFileSelector* result) {
+        auto* self = state->view.load(std::memory_order_acquire);
+        if (!self) {
+            return;
+        }
+        if (result->getNumSelectedFiles() == 0) {
+            return;
+        }
+        const auto* selected = result->getSelectedFile(0);
+        if (selected) {
+            self->importReference(selected);
+        }
+    });
+    if (!started) {
+        selector->forget();
+        setStatus("Could not open the WAV import dialog");
+    }
+}
+
+bool KiqMainView::importReference(const std::string& path) {
+    const auto state = callbackState_;
+    {
+        std::lock_guard<std::mutex> lock(state->referenceMutex);
+        if (state->referenceInFlight) {
+            setStatus("Reference analysis is already running");
+            return false;
+        }
+        state->completedReference.reset();
+        state->referenceInFlight = true;
+    }
+
+    setStatus("Analyzing reference: " +
+              std::filesystem::path(path).filename().string());
+    try {
+        if (referenceWorker_.joinable()) {
+            referenceWorker_.join();
+        }
+        referenceWorker_ = std::thread([state, path] {
+            ReferenceImportResult completed;
+
+            try {
+                completed.path = path;
+                // Bound both the encoded file allocation and the decoded mono
+                // buffer. This still accommodates several minutes of ordinary
+                // stereo reference material while rejecting pathological inputs.
+                WavDecodeLimits limits;
+                limits.maximumFileBytes = 128u * 1024u * 1024u;
+                limits.maximumFrames = 12u * 1024u * 1024u;
+                auto decoded = loadWavFile(path, limits);
+                if (!decoded) {
+                    completed.error = "WAV import failed: " + decoded.message;
+                } else {
+                    auto analyzed = analyzeReferenceKick(decoded.audio);
+                    if (!analyzed) {
+                        completed.error =
+                            "Reference analysis failed: " + analyzed.message;
+                    } else {
+                        completed.analysis = std::move(analyzed.analysis);
+                    }
+                }
+            } catch (const std::exception& error) {
+                completed.error =
+                    "Reference analysis failed: " + std::string(error.what());
+            } catch (...) {
+                completed.error = "Reference analysis failed unexpectedly";
+            }
+
+            std::lock_guard<std::mutex> lock(state->referenceMutex);
+            state->completedReference = std::move(completed);
+            state->referenceInFlight = false;
+        });
+    } catch (const std::exception& error) {
+        {
+            std::lock_guard<std::mutex> lock(state->referenceMutex);
+            state->referenceInFlight = false;
+        }
+        setStatus("Could not start reference analysis: " + std::string(error.what()));
+        return false;
+    }
+    return true;
+}
+
+void KiqMainView::consumeReferenceImport() {
+    std::optional<ReferenceImportResult> completed;
+    {
+        std::lock_guard<std::mutex> lock(callbackState_->referenceMutex);
+        if (!callbackState_->completedReference) {
+            return;
+        }
+        completed = std::move(callbackState_->completedReference);
+        callbackState_->completedReference.reset();
+    }
+
+    if (!completed->analysis) {
+        setStatus(completed->error.empty()
+                      ? "Reference analysis failed"
+                      : std::move(completed->error));
+        return;
+    }
+
+    referenceAnalysis_ = std::move(*completed->analysis);
+    sampleSourcePath_ = completed->path;
+    if (referenceAnalysis_->transientSample &&
+        !referenceAnalysis_->transientSample->monoSamples.empty()) {
+        auto layer = std::make_shared<SampleLayerData>();
+        layer->sourceSampleRate = std::clamp(
+            static_cast<float>(referenceAnalysis_->transientSample->sampleRate),
+            1000.0f, 768000.0f);
+        layer->samples = referenceAnalysis_->transientSample->monoSamples;
+        installSampleLayer(std::move(layer));
+    } else {
+        installSampleLayer(nullptr);
+    }
+    applyReferenceFit();
+    history_.reset(currentParams());
+    waveformDirty_ = true;
+    setStatus("Matched reference: " +
+              std::filesystem::path(completed->path).filename().string());
+}
+
+void KiqMainView::applyReferenceFit() {
+    if (!referenceAnalysis_) {
+        return;
+    }
+    // Matching is deterministic from the reference alone. Start from a
+    // neutral/default post stage instead of carrying EQ or saturation from a
+    // previously selected sound into the fitted result. Phase stays under the
+    // independent ALIGN workflow.
+    const KickParams current = currentParams();
+    KickParams params = kDefaultKickParams;
+    params.phaseDegrees = current.phaseDegrees;
+    params.phaseLockMs = current.phaseLockMs;
+    const auto& fit = referenceAnalysis_->fit;
+    for (std::size_t index = 0; index < kTrajectoryPointCount; ++index) {
+        params.pitch[index].timeMs = fit.pitchHz[index].timeMs;
+        params.pitch[index].value = fit.pitchHz[index].value;
+        params.amplitude[index].timeMs = fit.amplitudeDb[index].timeMs;
+        params.amplitude[index].value = fit.amplitudeDb[index].value;
+        if (index + 1 < kTrajectoryPointCount) {
+            params.pitch[index].curve = fit.pitchHz[index].curve;
+            params.amplitude[index].curve = fit.amplitudeDb[index].curve;
+        }
+    }
+    params.strikePosition = fit.strikePosition;
+    params.transient.impactLevel = fit.impactLevel;
+    params.transient.airLevel = fit.airLevel;
+    params.transient.airDecayMs = fit.airDecayMs;
+    params.transient.beaterHardnessHz = fit.beaterHardnessHz;
+    params.outputGain = fit.outputGain;
+    params.membraneLevel = std::clamp(
+        std::sqrt(referenceAnalysis_->components.bodyEnergyFraction), 0.2f, 1.0f);
+    if (referenceAnalysis_->transientSample && sampleLayer_) {
+        const float outputGain = std::max(params.outputGain, 1.0e-4f);
+        params.sampleLevel = std::clamp(
+            referenceAnalysis_->transientSample->suggestedGain / outputGain,
+            0.0f, 1.0f);
+    } else {
+        params.sampleLevel = 0.0f;
+    }
+    applyParams(params);
+    presetName_ = "Reference Match";
+    setStatus("Physical model fit applied");
+}
+
+void KiqMainView::alignReferencePhase() {
+    if (!referenceAnalysis_) {
+        return;
+    }
+    float phase = std::fmod(referenceAnalysis_->fit.phaseAtOnsetDegrees, 360.0f);
+    if (phase > 180.0f) {
+        phase -= 360.0f;
+    } else if (phase < -180.0f) {
+        phase += 360.0f;
+    }
+    KickParams params = currentParams();
+    params.phaseDegrees = phase;
+    params.phaseLockMs = std::max(0.0f,
+        referenceAnalysis_->fit.phaseReferenceTimeMs);
+    applyParams(params);
+    presetName_ = "Edited";
+    char message[80] {};
+    std::snprintf(message, sizeof(message), "Phase aligned: %+.0f deg (%.0f%% confidence)",
+                  phase, referenceAnalysis_->fit.phaseConfidence * 100.0f);
+    setStatus(message);
+}
+
+void KiqMainView::openExportSelector() {
+    auto selector = owned(CNewFileSelector::create(
+        getFrame(), CNewFileSelector::Style::kSelectSaveFile));
+    if (!selector) {
+        setStatus("Could not open the WAV export dialog");
+        return;
+    }
+    selector->setTitle("Export Kiq Kick");
+    selector->setDefaultSaveName((safeSaveStem(presetName_) + ".wav").c_str());
+    selector->setDefaultExtension(
+        CFileExtension("WAVE Audio", "wav", "audio/wav"));
+    const bool started = selector->run([state = callbackState_](CNewFileSelector* result) {
+        auto* self = state->view.load(std::memory_order_acquire);
+        if (!self) {
+            return;
+        }
+        if (result->getNumSelectedFiles() == 0) {
+            return;
+        }
+        const auto* selected = result->getSelectedFile(0);
+        if (selected) {
+            self->exportWav(withExtension(selected, ".wav"));
+        }
+    });
+    if (!started) {
+        selector->forget();
+        setStatus("Could not open the WAV export dialog");
+    }
+}
+
+bool KiqMainView::exportWav(const std::string& path) {
+    KickRenderSettings settings;
+    settings.sampleRate = 48000;
+    settings.sampleLayer = sampleLayer_.get();
+    std::string error;
+    if (!KickWavExporter::renderToFile(
+            path, currentParams(), settings, &error)) {
+        setStatus("WAV export failed: " + error);
+        return false;
+    }
+    setStatus("Exported: " + std::filesystem::path(path).filename().string());
+    return true;
+}
+
+void KiqMainView::startExportDrag() {
+    cleanupOldTemporaryExports();
+    const auto stamp = std::chrono::steady_clock::now()
+                           .time_since_epoch().count();
+    temporaryExportPath_ =
+        (std::filesystem::temp_directory_path() /
+         ("Kiq-Kick-" + std::to_string(stamp) + ".wav")).string();
+    if (!exportWav(temporaryExportPath_) ||
+        temporaryExportPath_.size() >=
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return;
+    }
+    const auto package = CDropSource::create(
+        temporaryExportPath_.c_str(),
+        static_cast<std::uint32_t>(temporaryExportPath_.size() + 1),
+        IDataPackage::kFilePath);
+    if (!doDrag(DragDescription(package))) {
+        setStatus("The host did not start the WAV drag");
+    }
+}
+
+std::optional<std::string> KiqMainView::firstWavPath(IDataPackage* package) {
+    if (!package) {
+        return std::nullopt;
+    }
+    for (const auto& item : package) {
+        if (item.type != IDataPackage::kFilePath || !item.data || item.dataSize == 0) {
+            continue;
+        }
+        std::string path(static_cast<const char*>(item.data), item.dataSize);
+        while (!path.empty() && path.back() == '\0') {
+            path.pop_back();
+        }
+        std::string extension = std::filesystem::path(path).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        if (extension == ".wav") {
+            return path;
+        }
+    }
+    return std::nullopt;
+}
+
+DragOperation KiqMainView::onDragEnter(DragEventData data) {
+    dropHover_ = firstWavPath(data.drag).has_value();
+    invalid();
+    return dropHover_ ? DragOperation::Copy : DragOperation::None;
+}
+
+DragOperation KiqMainView::onDragMove(DragEventData data) {
+    const bool accepts = firstWavPath(data.drag).has_value();
+    if (accepts != dropHover_) {
+        dropHover_ = accepts;
+        invalid();
+    }
+    return accepts ? DragOperation::Copy : DragOperation::None;
+}
+
+void KiqMainView::onDragLeave(DragEventData) {
+    dropHover_ = false;
+    invalid();
+}
+
+bool KiqMainView::onDrop(DragEventData data) {
+    dropHover_ = false;
+    invalid();
+    const auto path = firstWavPath(data.drag);
+    return path && importReference(*path);
+}
+
 void KiqMainView::onKeyboardEvent(KeyboardEvent& event) {
-    if (event.type == EventType::KeyDown &&
+    const bool command = event.modifiers.has(ModifierKey::Super) ||
+                         event.modifiers.has(ModifierKey::Control);
+    if (event.type == EventType::KeyDown && command &&
+        (event.character == U'z' || event.character == U'Z')) {
+        if (event.modifiers.has(ModifierKey::Shift)) {
+            redo();
+        } else {
+            undo();
+        }
+        event.consumed = true;
+    } else if (event.type == EventType::KeyDown &&
         (event.character == U' ' || event.virt == VirtualKey::Return)) {
         hitPressed_ = true;
         bridge_.triggerAudition();

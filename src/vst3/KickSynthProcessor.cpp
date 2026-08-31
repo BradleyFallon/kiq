@@ -1,8 +1,7 @@
 #include "KickSynthProcessor.h"
 #include "KickSynthCIDs.h"
 #include "AudioEngine.h"
-#include "ParameterEventQueue.h"
-#include "ParameterManager.h"
+#include "SampleLayerData.h"
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
@@ -10,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace Steinberg {
@@ -23,6 +23,10 @@ KickSynthProcessor::KickSynthProcessor()
 {
     // Set the controller class ID (will be defined in KickSynthCIDs.h)
     setControllerClass(kKickSynthControllerUID);
+    for (const auto& spec : KickDrum::kKickParameterSpecs)
+        stateParameterValues_[static_cast<std::size_t>(spec.id)].store(
+            KickDrum::getDefaultKickParameter(spec.id),
+            std::memory_order_relaxed);
 }
 
 //------------------------------------------------------------------------
@@ -72,6 +76,7 @@ tresult PLUGIN_API KickSynthProcessor::setActive(TBool state)
         auditionPending_.store(false, std::memory_order_release);
         meterPeak_ = 0.0f;
         clipHoldSamplesRemaining_ = 0;
+        audioEngine_->clearScheduledEvents();
         // Stop all notes
         audioEngine_->allNotesOff();
     }
@@ -102,6 +107,8 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
     // Check if we have audio output
     if (data.numOutputs == 0 || data.outputs[0].numChannels == 0)
     {
+        audioEngine_->flushScheduledEvents();
+        publishProcessedState();
         return kResultOk;
     }
 
@@ -113,6 +120,8 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
     // Check for valid output
     if (outputBuffers == nullptr || numSamples <= 0)
     {
+        audioEngine_->flushScheduledEvents();
+        publishProcessedState();
         return kResultOk;
     }
 
@@ -125,6 +134,7 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
         interleavedBuffer_.resize(requiredSamples);
     
     audioEngine_->processBlock(interleavedBuffer_.data(), numSamples, numChannels);
+    publishProcessedState();
 
     // De-interleave back to VST3 format
     for (int32 channel = 0; channel < numChannels; ++channel)
@@ -208,6 +218,64 @@ tresult PLUGIN_API KickSynthProcessor::notify(IMessage* message)
         audioEngine_->setAuditionLoop(enabled != 0, static_cast<float>(bpm));
         return kResultOk;
     }
+    if (message->getMessageID() &&
+        std::strcmp(message->getMessageID(), kSampleLayerMessageId) == 0)
+    {
+        auto* attributes = message->getAttributes();
+        if (!attributes)
+            return kInvalidArgument;
+        int64 enabled = 0;
+        attributes->getInt(kSampleLayerEnabledAttribute, enabled);
+        if (enabled == 0)
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            audioEngine_->setSampleLayer(nullptr);
+            return kResultOk;
+        }
+
+        const void* bytes = nullptr;
+        std::uint32_t byteCount = 0;
+        if (attributes->getBinary(kSampleLayerDataAttribute, bytes, byteCount) !=
+                kResultOk ||
+            !bytes)
+            return kInvalidArgument;
+
+        constexpr std::size_t headerBytes = sizeof(std::uint32_t) +
+                                            sizeof(float) +
+                                            sizeof(std::uint32_t);
+        if (byteCount < headerBytes)
+            return kInvalidArgument;
+        const auto* cursor = static_cast<const std::uint8_t*>(bytes);
+        std::uint32_t formatVersion = 0;
+        float sourceSampleRate = 0.0f;
+        std::uint32_t sampleCount = 0;
+        std::memcpy(&formatVersion, cursor, sizeof(formatVersion));
+        cursor += sizeof(formatVersion);
+        std::memcpy(&sourceSampleRate, cursor, sizeof(sourceSampleRate));
+        cursor += sizeof(sourceSampleRate);
+        std::memcpy(&sampleCount, cursor, sizeof(sampleCount));
+        cursor += sizeof(sampleCount);
+        if (formatVersion != 1 || sampleCount == 0 ||
+            sampleCount > kMaximumSampleLayerSamples ||
+            !std::isfinite(sourceSampleRate) ||
+            sourceSampleRate < kMinimumSampleLayerRate ||
+            sourceSampleRate > kMaximumSampleLayerRate ||
+            byteCount != headerBytes + sampleCount * sizeof(float))
+            return kInvalidArgument;
+
+        auto layer = std::make_shared<KickDrum::SampleLayerData>();
+        layer->sourceSampleRate = sourceSampleRate;
+        layer->samples.resize(sampleCount);
+        if (sampleCount > 0)
+            std::memcpy(layer->samples.data(), cursor, sampleCount * sizeof(float));
+        for (float& sample : layer->samples)
+            sample = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            audioEngine_->setSampleLayer(std::move(layer));
+        }
+        return kResultOk;
+    }
     return AudioEffect::notify(message);
 }
 
@@ -217,44 +285,82 @@ tresult PLUGIN_API KickSynthProcessor::setState(IBStream* state)
     if (!state)
         return kResultFalse;
 
-    // Read state from stream
     IBStreamer streamer(state, kLittleEndian);
-    
-    // Read version
     uint32 version = 0;
-    if (!streamer.readInt32u(version))
-        return kResultFalse;
-
-    // Read number of parameters
     uint32 numParams = 0;
-    if (!streamer.readInt32u(numParams))
+    if (!streamer.readInt32u(version) ||
+        version == 0 || version > kStateFormatVersion ||
+        !streamer.readInt32u(numParams) ||
+        numParams > kMaximumStateParameterCount)
         return kResultFalse;
 
-    // Read each parameter
-    KickDrum::ParameterManager* paramManager = audioEngine_->getParameterManager();
-    if (!paramManager)
-        return kResultFalse;
-
+    // Parse the complete chunk before mutating live state. Starting from the
+    // authoritative defaults makes old v1 chunks deterministic for every
+    // parameter appended since that format was written.
+    KickDrum::KickParams loadedParams = KickDrum::kDefaultKickParams;
     for (uint32 i = 0; i < numParams; ++i)
     {
-        // Read parameter ID length
         uint32 idLength = 0;
-        if (!streamer.readInt32u(idLength))
+        if (!streamer.readInt32u(idLength) || idLength == 0 ||
+            idLength > kMaximumStateParameterIdBytes)
             return kResultFalse;
 
-        // Read parameter ID
-        std::string paramId;
-        paramId.resize(idLength);
+        std::string paramId(idLength, '\0');
         if (streamer.readRaw(paramId.data(), idLength) != idLength)
             return kResultFalse;
 
-        // Read parameter value
         double value = 0.0;
         if (!streamer.readDouble(value))
             return kResultFalse;
+        if (const auto* spec = KickDrum::findKickParameterSpec(paramId))
+            KickDrum::setKickParameter(
+                loadedParams, spec->id, static_cast<float>(value));
+    }
 
-        if (paramManager->hasParameter(paramId))
-            audioEngine_->setParameter(paramId, static_cast<float>(value));
+    std::shared_ptr<const KickDrum::SampleLayerData> loadedSampleLayer;
+    if (version >= 2)
+    {
+        uint32 hasSampleLayer = 0;
+        if (!streamer.readInt32u(hasSampleLayer) || hasSampleLayer > 1)
+            return kResultFalse;
+        if (hasSampleLayer != 0)
+        {
+            double sourceSampleRate = 0.0;
+            uint32 sampleCount = 0;
+            if (!streamer.readDouble(sourceSampleRate) ||
+                !streamer.readInt32u(sampleCount) ||
+                sampleCount == 0 ||
+                sampleCount > kMaximumSampleLayerSamples ||
+                !std::isfinite(sourceSampleRate) ||
+                sourceSampleRate < kMinimumSampleLayerRate ||
+                sourceSampleRate > kMaximumSampleLayerRate)
+                return kResultFalse;
+            auto layer = std::make_shared<KickDrum::SampleLayerData>();
+            layer->sourceSampleRate = static_cast<float>(sourceSampleRate);
+            layer->samples.resize(sampleCount);
+            const TSize sampleBytes = static_cast<TSize>(
+                static_cast<std::size_t>(sampleCount) * sizeof(float));
+            if (sampleBytes > 0 &&
+                streamer.readRaw(layer->samples.data(), sampleBytes) != sampleBytes)
+                return kResultFalse;
+            for (float& sample : layer->samples)
+                sample = std::isfinite(sample)
+                             ? std::clamp(sample, -1.0f, 1.0f)
+                             : 0.0f;
+            loadedSampleLayer = std::move(layer);
+        }
+    }
+
+    loadedParams = KickDrum::sanitizeKickParams(loadedParams);
+    // Publish parameters and sample as one engine transaction. Advancing the
+    // serial only after that publication lets getState() distinguish a pending
+    // restore from the most recently completed audio block.
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        const std::uint64_t stateSerial =
+            audioEngine_->setStateSnapshot(loadedParams, loadedSampleLayer);
+        requestedState_ = loadedParams;
+        requestedStateSerial_.store(stateSerial, std::memory_order_release);
     }
 
     return kResultOk;
@@ -266,28 +372,38 @@ tresult PLUGIN_API KickSynthProcessor::getState(IBStream* state)
     if (!state)
         return kResultFalse;
 
-    // Write state to stream
+    KickDrum::KickParams serializedParams;
+    std::shared_ptr<const KickDrum::SampleLayerData> sampleLayer;
+    {
+        // A requested restore is authoritative until an audio callback reports
+        // that it has crossed the corresponding block boundary. Otherwise use
+        // the seqlock-protected snapshot of host automation actually processed.
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        const auto requestedSerial =
+            requestedStateSerial_.load(std::memory_order_acquire);
+        const auto processedSerial =
+            processedStateSerial_.load(std::memory_order_acquire);
+        serializedParams = processedSerial < requestedSerial
+                               ? requestedState_
+                               : readProcessedState();
+        sampleLayer = audioEngine_->getSampleLayer();
+    }
+
     IBStreamer streamer(state, kLittleEndian);
 
     // Write version
-    uint32 version = 1;
+    uint32 version = kStateFormatVersion;
     if (!streamer.writeInt32u(version))
         return kResultFalse;
 
-    // Get all parameters
-    KickDrum::ParameterManager* paramManager = audioEngine_->getParameterManager();
-    if (!paramManager)
-        return kResultFalse;
-
-    std::vector<std::string> paramIds = paramManager->getParameterIds();
-    
     // Write number of parameters
-    if (!streamer.writeInt32u(static_cast<uint32>(paramIds.size())))
+    if (!streamer.writeInt32u(
+            static_cast<uint32>(KickDrum::kKickParameterSpecs.size())))
         return kResultFalse;
 
-    // Write each parameter
-    for (const auto& paramId : paramIds)
+    for (const auto& spec : KickDrum::kKickParameterSpecs)
     {
+        const std::string_view paramId = spec.key;
         // Write parameter ID length
         if (!streamer.writeInt32u(static_cast<uint32>(paramId.length())))
             return kResultFalse;
@@ -298,8 +414,27 @@ tresult PLUGIN_API KickSynthProcessor::getState(IBStream* state)
             return kResultFalse;
 
         // Write parameter value
-        float value = paramManager->getParameterValue(paramId);
+        const float value = KickDrum::getKickParameter(serializedParams, spec.id);
         if (!streamer.writeDouble(static_cast<double>(value)))
+            return kResultFalse;
+    }
+
+    const bool canPersistSample = sampleLayer &&
+                                  !sampleLayer->samples.empty() &&
+                                  sampleLayer->samples.size() <=
+                                      kMaximumSampleLayerSamples;
+    if (!streamer.writeInt32u(canPersistSample ? 1u : 0u))
+        return kResultFalse;
+    if (canPersistSample)
+    {
+        if (!streamer.writeDouble(sampleLayer->sourceSampleRate) ||
+            !streamer.writeInt32u(
+                static_cast<uint32>(sampleLayer->samples.size())))
+            return kResultFalse;
+        const TSize sampleBytes = static_cast<TSize>(
+            sampleLayer->samples.size() * sizeof(float));
+        if (sampleBytes > 0 &&
+            streamer.writeRaw(sampleLayer->samples.data(), sampleBytes) != sampleBytes)
             return kResultFalse;
     }
 
@@ -355,15 +490,19 @@ void KickSynthProcessor::processMIDIEvents(IEventList* events)
             {
                 case Event::kNoteOnEvent:
                 {
-                    // Convert MIDI note to our format
-                    // VST3 velocity is 0.0 to 1.0
-                    audioEngine_->noteOn(event.noteOn.pitch, event.noteOn.velocity);
+                    audioEngine_->scheduleNoteOnEvent(
+                        event.noteOn.pitch, event.noteOn.velocity,
+                        static_cast<std::uint32_t>(
+                            std::max(event.sampleOffset, 0)));
                     break;
                 }
 
                 case Event::kNoteOffEvent:
                 {
-                    audioEngine_->noteOff(event.noteOff.pitch);
+                    audioEngine_->scheduleNoteOffEvent(
+                        event.noteOff.pitch,
+                        static_cast<std::uint32_t>(
+                            std::max(event.sampleOffset, 0)));
                     break;
                 }
 
@@ -379,11 +518,6 @@ void KickSynthProcessor::processMIDIEvents(IEventList* events)
 void KickSynthProcessor::processParameterChanges(IParameterChanges* changes)
 {
     if (!changes)
-        return;
-
-    auto* paramManager = audioEngine_->getParameterManager();
-    auto* eventQueue = audioEngine_->getParameterEventQueue();
-    if (!paramManager || !eventQueue)
         return;
 
     int32 numParamsChanged = changes->getParameterCount();
@@ -407,18 +541,53 @@ void KickSynthProcessor::processParameterChanges(IParameterChanges* changes)
 
                 const float value = static_cast<float>(
                     denormalizeParameterValue(*mapping, normalizedValue));
-                const auto* spec = KickDrum::findKickParameterSpec(mapping->engineId);
-                if (!spec)
-                    continue;
-                const std::string parameterId(spec->key);
-
-                // Keep serialized state current and apply every automation point
-                // at the host-provided position in the upcoming audio block.
-                paramManager->setParameterValue(parameterId, value);
-                eventQueue->addEvent(parameterId, value,
-                                     static_cast<uint32_t>(std::max(sampleOffset, 0)));
+                audioEngine_->scheduleParameterEvent(
+                    mapping->engineId, value,
+                    static_cast<std::uint32_t>(std::max(sampleOffset, 0)));
             }
         }
+    }
+}
+
+//------------------------------------------------------------------------
+void KickSynthProcessor::publishProcessedState() noexcept
+{
+    const KickDrum::KickParams params = audioEngine_->getParams();
+    processedStateEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    for (const auto& spec : KickDrum::kKickParameterSpecs)
+    {
+        stateParameterValues_[static_cast<std::size_t>(spec.id)].store(
+            KickDrum::getKickParameter(params, spec.id),
+            std::memory_order_relaxed);
+    }
+    processedStateEpoch_.fetch_add(1, std::memory_order_release);
+    processedStateSerial_.store(audioEngine_->getAppliedStateRevision(),
+                                std::memory_order_release);
+}
+
+//------------------------------------------------------------------------
+KickDrum::KickParams KickSynthProcessor::readProcessedState() const noexcept
+{
+    KickDrum::KickParams params = KickDrum::kDefaultKickParams;
+    for (;;)
+    {
+        const std::uint64_t before =
+            processedStateEpoch_.load(std::memory_order_acquire);
+        if ((before & 1u) != 0u)
+            continue;
+
+        for (const auto& spec : KickDrum::kKickParameterSpecs)
+        {
+            KickDrum::setKickParameter(
+                params, spec.id,
+                stateParameterValues_[static_cast<std::size_t>(spec.id)].load(
+                    std::memory_order_relaxed));
+        }
+
+        const std::uint64_t after =
+            processedStateEpoch_.load(std::memory_order_acquire);
+        if (before == after && (after & 1u) == 0u)
+            return KickDrum::sanitizeKickParams(params);
     }
 }
 

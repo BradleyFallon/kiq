@@ -7,10 +7,9 @@ This document provides detailed instructions for building the Kick Drum Synthesi
 ### Required Tools
 
 - **CMake** 3.25 or later
-- **C++17 compatible compiler**:
-  - macOS: Xcode Command Line Tools (Clang)
-  - Linux: GCC 7+ or Clang 5+
-  - Windows: Visual Studio 2019 or later
+- **C++17 compiler with `std::filesystem` support**. The complete app and
+  plug-in workflow is currently supported on macOS; Linux can use the
+  engine/test-only configuration. A Windows port is not yet supported.
 - **Git** (for cloning dependencies)
 
 ### Platform-Specific Requirements
@@ -21,11 +20,11 @@ This document provides detailed instructions for building the Kick Drum Synthesi
 - CoreAudio and CoreMIDI frameworks (included with macOS)
 
 #### Linux
-- ALSA development libraries: `sudo apt-get install libasound2-dev`
-- JACK development libraries (optional): `sudo apt-get install libjack-dev`
+- Build the core engine and tests with both graphical targets disabled. Native
+  graphical/audio targets have not been implemented or release-validated.
 
 #### Windows
-- Visual Studio 2019 or later with C++ desktop development workload
+- No supported build configuration is currently maintained.
 
 ### Graphical Dependencies
 
@@ -42,19 +41,15 @@ git clone --recursive https://github.com/steinbergmedia/vst3sdk.git
 cd ..
 ```
 
-#### Node.js (Required for Property-Based Tests)
-
-Node.js 16+ is required to run property-based tests with fast-check.
-
-Download from: https://nodejs.org/
-
 ## Quick Build
 
-### Using the Build Script (macOS/Linux)
+### Using the Build Script (macOS)
+
+After installing the VST3 SDK and VSTGUI described above:
 
 ```bash
-chmod +x build.sh
-./build.sh
+chmod +x scripts/build/build.sh
+./scripts/build/build.sh
 ```
 
 ### Manual Build
@@ -64,8 +59,10 @@ chmod +x build.sh
 mkdir build
 cd build
 
-# Configure
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_VST3=OFF
+# Configure a core-engine and test-only build (no graphical SDK required)
+cmake .. -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_VST3=OFF \
+    -DBUILD_STANDALONE=OFF
 
 # Build
 cmake --build . --config Release
@@ -154,7 +151,7 @@ cmake --build cmake-build-vst3-xcode --config Release --target KickDrumSynth
 The Xcode generator is required by the bundled SDK's macOS Objective-C++
 targets. Its post-build step runs Steinberg's validator.
 
-### Standalone App Only
+### Standalone App Only (macOS)
 
 ```bash
 cmake -S . -B build \
@@ -181,25 +178,15 @@ ctest --output-on-failure
 ./bin/kick_drum_tests
 ```
 
-### Property-Based Tests
-
-```bash
-cd tests/property
-npm install
-npm test
-```
-
 ### Run All Tests
 
 ```bash
-# C++ tests
 cd build
-ctest
-
-# Property tests
-cd ../tests/property
-npm test
+ctest --output-on-failure
 ```
+
+`tests/property` is currently reserved for future generated-invariant tests;
+the active behavior suite is the C++/CTest suite above.
 
 ## Installation
 
@@ -307,29 +294,17 @@ codesign --force --deep --sign "Developer ID" build/bin/KickDrumSynthStandalone.
 
 ### Linux
 
-#### JACK Support
+The Linux configuration is the core engine and behavior suite:
 
-To build with JACK audio support:
 ```bash
-sudo apt-get install libjack-dev
-cmake .. -DUSE_JACK=ON
-cmake --build .
+cmake -S . -B build -DBUILD_VST3=OFF -DBUILD_STANDALONE=OFF
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
 ```
 
-### Windows
-
-#### Visual Studio
-
-Open the generated solution:
-```bash
-cmake .. -G "Visual Studio 16 2019"
-start KickDrumSynthesizer.sln
-```
-
-Or build from command line:
-```bash
-cmake --build . --config Release
-```
+ALSA/JACK and graphical packaging are not implemented Linux targets. Windows
+native audio and build portability remain future work. The macOS standalone
+app and VST3 bundle are the release-validated products today.
 
 ## Performance Optimization
 
@@ -393,7 +368,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -DBUILD_VST3=OFF
+          cmake .. -DBUILD_VST3=OFF -DBUILD_STANDALONE=OFF
           cmake --build .
       - name: Test
         run: |

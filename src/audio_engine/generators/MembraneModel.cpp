@@ -1,5 +1,7 @@
 #include "MembraneModel.h"
 
+#include "../parameters/KickParams.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -33,7 +35,9 @@ float besselJ(unsigned order, float x) {
 } // namespace
 
 void MembraneModel::initialize(float sampleRate) {
-    const float validSampleRate = sampleRate > 0.0f ? sampleRate : 48000.0f;
+    const float validSampleRate = std::isfinite(sampleRate) && sampleRate > 0.0f
+                                      ? sampleRate
+                                      : 48000.0f;
     for (auto& mode : modes_) {
         mode.initialize(validSampleRate);
     }
@@ -43,6 +47,9 @@ void MembraneModel::initialize(float sampleRate) {
 }
 
 void MembraneModel::setStrikePosition(float normalizedPosition) {
+    if (!std::isfinite(normalizedPosition)) {
+        normalizedPosition = kDefaultKickParams.strikePosition;
+    }
     strikePosition_ = std::clamp(normalizedPosition, 0.0f, 1.0f);
     // Keep the UI's far-right stop slightly inside the fixed rim so it remains
     // useful instead of landing on the membrane's all-mode displacement node.
@@ -52,12 +59,24 @@ void MembraneModel::setStrikePosition(float normalizedPosition) {
     modeGains_[2] = 0.22f * besselJ(2, kModeRoots[2] * radius);
 }
 
+void MembraneModel::setFundamentalPhase(float normalizedCycles) {
+    if (!std::isfinite(normalizedCycles)) {
+        normalizedCycles = 0.0f;
+    }
+    fundamentalStartPhase_ = normalizedCycles - std::floor(normalizedCycles);
+    if (fundamentalStartPhase_ < 0.0f) {
+        fundamentalStartPhase_ += 1.0f;
+    }
+}
+
 void MembraneModel::trigger() {
-    for (auto& mode : modes_) {
-        mode.reset();
+    for (std::size_t index = 0; index < modes_.size(); ++index) {
+        modes_[index].reset();
         // A force impulse establishes membrane velocity, so each modal impulse
-        // response begins at its zero crossing instead of an arbitrary phase.
-        mode.setPhase(0.0f);
+        // response normally begins at its zero crossing. The fundamental can
+        // be rotated or locked independently without disturbing the physical
+        // relative phase of the shorter upper modes.
+        modes_[index].setPhase(index == 0 ? fundamentalStartPhase_ : 0.0f);
     }
 }
 
@@ -66,17 +85,24 @@ float MembraneModel::renderSample(float fundamentalHz, float timeMs) {
         return 0.0f;
     }
 
-    const float baseFrequency = std::max(fundamentalHz, 0.0f);
+    const float baseFrequency = std::isfinite(fundamentalHz)
+                                    ? std::max(fundamentalHz, 0.0f)
+                                    : 0.0f;
+    const float safeTimeMs = std::isfinite(timeMs) ? std::max(timeMs, 0.0f) : 0.0f;
     for (std::size_t index = 0; index < modes_.size(); ++index) {
         modes_[index].setFrequency(baseFrequency * kModeRatios[index]);
     }
 
-    const float secondModeGain = modeGains_[1] * std::exp(-timeMs / 34.0f);
-    const float thirdModeGain = modeGains_[2] * std::exp(-timeMs / 16.0f);
+    const float secondModeGain = modeGains_[1] * std::exp(-safeTimeMs / 34.0f);
+    const float thirdModeGain = modeGains_[2] * std::exp(-safeTimeMs / 16.0f);
 
     return modeGains_[0] * modes_[0].generate() +
            secondModeGain * modes_[1].generate() +
            thirdModeGain * modes_[2].generate();
+}
+
+float MembraneModel::getFundamentalPhase() const {
+    return modes_[0].getPhase();
 }
 
 } // namespace KickDrum
