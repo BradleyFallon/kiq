@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../envelopes/Trajectory.h"
-#include "../generators/SineDriver.h"
+#include "../generators/MembraneModel.h"
 #include "../generators/TransientGenerator.h"
 #include "../parameters/KickParams.h"
 
@@ -12,11 +12,14 @@ namespace KickDrum {
 /** A single deterministic, one-shot kick voice. */
 class Voice {
 public:
+    static constexpr float kTailFadeMs = 5.0f;
+
     Voice();
 
     void initialize(float sampleRate);
     void setSampleRate(float sampleRate);
     void setParams(const KickParams& params);
+    void setOutputGain(float gain);
     const KickParams& getParams() const { return params_; }
 
     void trigger(int note, float velocity);
@@ -38,14 +41,17 @@ public:
 private:
     float currentTimeMs() const;
 
-    SineDriver sineDriver_;
+    MembraneModel membrane_;
     TransientGenerator transient_;
     PitchTrajectory pitchTrajectory_;
     AmplitudeTrajectory amplitudeTrajectory_;
     KickParams params_;
     int note_;
     float velocity_;
+    float outputGainCurrent_;
+    float outputGainStep_;
     std::uint64_t age_;
+    int outputGainRampSamplesRemaining_;
     float sampleRate_;
     float pitchBendValue_;
     float pitchBendRange_;

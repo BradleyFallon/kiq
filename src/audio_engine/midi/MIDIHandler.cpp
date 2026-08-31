@@ -1,5 +1,6 @@
 #include "MIDIHandler.h"
 #include <algorithm>
+#include <utility>
 
 namespace KickDrum {
 
@@ -32,12 +33,16 @@ void MIDIHandler::processMIDIMessage(const MIDIMessage& message) {
 }
 
 void MIDIHandler::handleNoteOn(int note, int velocity) {
+    // Normalize velocity from [0-127] to [0.0-1.0]
+    float normalizedVelocity = normalizeVelocity(velocity);
+
+    if (noteOnCallback_) {
+        noteOnCallback_(note, normalizedVelocity);
+        return;
+    }
     if (voiceAllocator_ == nullptr) {
         return;
     }
-    
-    // Normalize velocity from [0-127] to [0.0-1.0]
-    float normalizedVelocity = normalizeVelocity(velocity);
     
     // Allocate and trigger a voice
     Voice* voice = voiceAllocator_->allocateVoice(note, normalizedVelocity);
@@ -168,6 +173,10 @@ void MIDIHandler::setParameterManager(ParameterManager* parameterManager) {
 
 void MIDIHandler::setVoiceAllocator(VoiceAllocator* voiceAllocator) {
     voiceAllocator_ = voiceAllocator;
+}
+
+void MIDIHandler::setNoteOnCallback(NoteOnCallback callback) {
+    noteOnCallback_ = std::move(callback);
 }
 
 void MIDIHandler::setPitchBendRange(float semitones) {

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <vstgui-ui-description version="1">
     <template class="CViewContainer" name="KiqEditor" origin="0, 0"
-              size="1100, 700" transparent="false" mouse-enabled="true">
+              size="1100, 860" transparent="false" mouse-enabled="true">
         <view class="CView" custom-view-name="KiqMainView" origin="0, 0"
-              size="1100, 700" autosize="left right top bottom "
+              size="1100, 860" autosize="left right top bottom "
               transparent="false" mouse-enabled="true" wants-focus="true"/>
     </template>
 </vstgui-ui-description>

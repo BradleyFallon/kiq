@@ -30,7 +30,7 @@ public:
         WindowConfiguration config;
         config.title = "Kiq — Kick Designer";
         // VSTGUI's macOS standalone backend treats this as the outer window
-        // size. Account for the native title bar so the 700-point canvas is
+        // size. Account for the native title bar so the editor canvas is
         // not vertically cropped.
         config.size = CPoint(UI::KiqMainView::kDesignWidth,
                              UI::KiqMainView::kDesignHeight + 29.0);
@@ -55,6 +55,9 @@ public:
     }
 
     void onClosed(const IWindow&) override {
+        if (window_) {
+            window_->setContentView(nullptr);
+        }
         if (bridge_) {
             bridge_->shutdown();
         }
@@ -63,6 +66,10 @@ public:
     }
 
     void onQuit() override {
+        if (window_) {
+            window_->setContentView(nullptr);
+            window_ = nullptr;
+        }
         if (bridge_) {
             bridge_->shutdown();
         }

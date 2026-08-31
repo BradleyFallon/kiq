@@ -55,6 +55,16 @@ public:
     void enqueueNoteOn(int note, float velocity);
 
     /**
+     * @brief Enable or disable sample-accurate repeating UI audition hits
+     * @param enabled Whether audition looping is active
+     * @param bpm Tempo in beats per minute (clamped to 40-240)
+     *
+     * This method is safe to call from the UI thread. Enabling the loop
+     * schedules its first hit at the start of the next processed block.
+     */
+    void setAuditionLoop(bool enabled, float bpm);
+
+    /**
      * @brief Release a note
      * @param note MIDI note number (0-127)
      */

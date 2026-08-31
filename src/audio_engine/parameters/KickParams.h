@@ -16,16 +16,16 @@ struct CurvePoint {
 };
 
 struct TransientParams {
-    float clickLevel;
-    float noiseLevel;
-    float noiseDecayMs;
-    float noiseToneHz;
+    float impactLevel;
+    float airLevel;
+    float airDecayMs;
+    float beaterHardnessHz;
 };
 
 struct KickParams {
     std::array<CurvePoint, kTrajectoryPointCount> pitch;
     std::array<CurvePoint, kTrajectoryPointCount> amplitude;
-    float startPhase;
+    float strikePosition;
     TransientParams transient;
     float outputGain;
 };
@@ -67,11 +67,11 @@ enum class KickParameterId : std::uint32_t {
     AmpCurve1,
     AmpCurve2,
     AmpCurve3,
-    StartPhase,
-    ClickLevel,
-    NoiseLevel,
-    NoiseDecayMs,
-    NoiseToneHz,
+    StrikePosition,
+    ImpactLevel,
+    AirLevel,
+    AirDecayMs,
+    BeaterHardnessHz,
     OutputGain,
     Count,
 };
@@ -108,11 +108,11 @@ inline constexpr std::array<KickParameterSpec,
         {KickParameterId::AmpCurve1, "ampCurve1", "Amplitude Curve 1", -1.0f, 1.0f, ""},
         {KickParameterId::AmpCurve2, "ampCurve2", "Amplitude Curve 2", -1.0f, 1.0f, ""},
         {KickParameterId::AmpCurve3, "ampCurve3", "Amplitude Curve 3", -1.0f, 1.0f, ""},
-        {KickParameterId::StartPhase, "startPhase", "Start Phase", 0.0f, 1.0f, "cycles"},
-        {KickParameterId::ClickLevel, "clickLevel", "Click Level", 0.0f, 1.0f, ""},
-        {KickParameterId::NoiseLevel, "noiseLevel", "Noise Level", 0.0f, 1.0f, ""},
-        {KickParameterId::NoiseDecayMs, "noiseDecayMs", "Noise Decay", 1.0f, 50.0f, "ms"},
-        {KickParameterId::NoiseToneHz, "noiseToneHz", "Noise Tone", 200.0f, 16000.0f, "Hz"},
+        {KickParameterId::StrikePosition, "strikePosition", "Strike Position", 0.0f, 1.0f, ""},
+        {KickParameterId::ImpactLevel, "impactLevel", "Impact Level", 0.0f, 1.0f, ""},
+        {KickParameterId::AirLevel, "airLevel", "Air Level", 0.0f, 1.0f, ""},
+        {KickParameterId::AirDecayMs, "airDecayMs", "Air Decay", 1.0f, 50.0f, "ms"},
+        {KickParameterId::BeaterHardnessHz, "beaterHardnessHz", "Beater Hardness", 200.0f, 16000.0f, "Hz"},
         {KickParameterId::OutputGain, "outputGain", "Output Gain", 0.0f, 1.0f, ""},
     }};
 

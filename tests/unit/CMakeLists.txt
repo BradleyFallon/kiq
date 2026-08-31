@@ -4,6 +4,7 @@
 add_executable(kick_drum_tests
     # Generator tests
     generators/SineDriverTest.cpp
+    generators/MembraneModelTest.cpp
     generators/NoiseGeneratorTest.cpp
     generators/TransientGeneratorTest.cpp
     

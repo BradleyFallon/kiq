@@ -16,7 +16,10 @@ Voice::Voice()
     , params_(kDefaultKickParams)
     , note_(60)
     , velocity_(1.0f)
+    , outputGainCurrent_(kDefaultKickParams.outputGain)
+    , outputGainStep_(0.0f)
     , age_(0)
+    , outputGainRampSamplesRemaining_(0)
     , sampleRate_(48000.0f)
     , pitchBendValue_(0.0f)
     , pitchBendRange_(2.0f)
@@ -27,7 +30,7 @@ Voice::Voice()
 
 void Voice::initialize(float sampleRate) {
     sampleRate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
-    sineDriver_.initialize(sampleRate_);
+    membrane_.initialize(sampleRate_);
     transient_.initialize(sampleRate_);
     initialized_ = true;
     stop();
@@ -42,6 +45,30 @@ void Voice::setParams(const KickParams& params) {
     pitchTrajectory_.setPoints(params_.pitch);
     amplitudeTrajectory_.setPoints(params_.amplitude);
     transient_.setParams(params_.transient);
+    membrane_.setStrikePosition(params_.strikePosition);
+    outputGainCurrent_ = params_.outputGain;
+    outputGainStep_ = 0.0f;
+    outputGainRampSamplesRemaining_ = 0;
+}
+
+void Voice::setOutputGain(float gain) {
+    const float target = std::clamp(gain, 0.0f, 1.0f);
+    if (std::abs(params_.outputGain - target) <= 1.0e-6f) {
+        return;
+    }
+    params_.outputGain = target;
+    if (!initialized_ || !active_) {
+        outputGainCurrent_ = params_.outputGain;
+        outputGainStep_ = 0.0f;
+        outputGainRampSamplesRemaining_ = 0;
+        return;
+    }
+
+    outputGainRampSamplesRemaining_ = std::max(
+        1, static_cast<int>(std::lround(sampleRate_ * 0.005f)));
+    outputGainStep_ =
+        (params_.outputGain - outputGainCurrent_) /
+        static_cast<float>(outputGainRampSamplesRemaining_);
 }
 
 void Voice::trigger(int note, float velocity) {
@@ -52,9 +79,11 @@ void Voice::trigger(int note, float velocity) {
     note_ = std::clamp(note, 0, 127);
     velocity_ = std::clamp(velocity, 0.0f, 1.0f);
     age_ = 0;
-    sineDriver_.reset();
-    sineDriver_.setPhase(params_.startPhase);
+    membrane_.trigger();
     transient_.trigger();
+    outputGainCurrent_ = params_.outputGain;
+    outputGainStep_ = 0.0f;
+    outputGainRampSamplesRemaining_ = 0;
     active_ = velocity_ > 0.0f;
 }
 
@@ -65,7 +94,7 @@ void Voice::release() {
 void Voice::stop() {
     active_ = false;
     age_ = 0;
-    sineDriver_.reset();
+    membrane_.trigger();
     transient_.trigger();
 }
 
@@ -94,18 +123,36 @@ float Voice::renderSample() {
     }
 
     const float timeMs = currentTimeMs();
-    const float durationMs =
-        std::max(amplitudeTrajectory_.durationMs(), transient_.durationMs());
-    if (timeMs > durationMs) {
+    const float bodyDurationMs = amplitudeTrajectory_.durationMs();
+    const float voiceDurationMs =
+        std::max(bodyDurationMs + kTailFadeMs, transient_.durationMs());
+    if (timeMs >= voiceDurationMs) {
         active_ = false;
         return 0.0f;
     }
 
-    sineDriver_.setFrequency(getCurrentPitchHz());
-    const float body = sineDriver_.generate() * dbToLinear(getCurrentAmplitudeDb());
+    float bodyTailGain = 1.0f;
+    if (timeMs > bodyDurationMs) {
+        const float fade = std::clamp(
+            (timeMs - bodyDurationMs) / kTailFadeMs, 0.0f, 1.0f);
+        bodyTailGain =
+            0.5f * (1.0f + std::cos(3.14159265358979323846f * fade));
+    }
+
+    if (outputGainRampSamplesRemaining_ > 0) {
+        outputGainCurrent_ += outputGainStep_;
+        --outputGainRampSamplesRemaining_;
+        if (outputGainRampSamplesRemaining_ == 0) {
+            outputGainCurrent_ = params_.outputGain;
+            outputGainStep_ = 0.0f;
+        }
+    }
+
+    const float body = membrane_.renderSample(getCurrentPitchHz(), timeMs) *
+                       dbToLinear(getCurrentAmplitudeDb()) * bodyTailGain;
     const float transient = transient_.renderSample(timeMs);
     ++age_;
-    return (body + transient) * velocity_ * params_.outputGain;
+    return (body + transient) * velocity_ * outputGainCurrent_;
 }
 
 } // namespace KickDrum

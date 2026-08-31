@@ -65,7 +65,7 @@ IPlugView* PLUGIN_API KickSynthController::createView(FIDString name) {
     auto* editor = new VSTGUI::AspectRatioVST3Editor(this, "KiqEditor", "kiq.uidesc");
     editor->setDelegate(this);
     editor->setMinZoomFactor(0.7);
-    editor->setEditorSizeConstrains({770.0, 490.0}, {1650.0, 1050.0});
+    editor->setEditorSizeConstrains({770.0, 602.0}, {1650.0, 1290.0});
     return editor;
 }
 
@@ -111,11 +111,11 @@ void KickSynthController::registerParameters() {
     ADD_PARAMETER("Amplitude Curve 1", "", kParamAmpCurve1, KickDrum::KickParameterId::AmpCurve1);
     ADD_PARAMETER("Amplitude Curve 2", "", kParamAmpCurve2, KickDrum::KickParameterId::AmpCurve2);
     ADD_PARAMETER("Amplitude Curve 3", "", kParamAmpCurve3, KickDrum::KickParameterId::AmpCurve3);
-    ADD_PARAMETER("Start Phase", "cycles", kParamStartPhase, KickDrum::KickParameterId::StartPhase);
-    ADD_PARAMETER("Click Level", "", kParamClickLevel, KickDrum::KickParameterId::ClickLevel);
-    ADD_PARAMETER("Noise Level", "", kParamNoiseLevel, KickDrum::KickParameterId::NoiseLevel);
-    ADD_PARAMETER("Noise Decay", "ms", kParamNoiseDecayMs, KickDrum::KickParameterId::NoiseDecayMs);
-    ADD_PARAMETER("Noise Tone", "Hz", kParamNoiseToneHz, KickDrum::KickParameterId::NoiseToneHz);
+    ADD_PARAMETER("Strike Position", "", kParamStrikePosition, KickDrum::KickParameterId::StrikePosition);
+    ADD_PARAMETER("Impact Level", "", kParamImpactLevel, KickDrum::KickParameterId::ImpactLevel);
+    ADD_PARAMETER("Air Level", "", kParamAirLevel, KickDrum::KickParameterId::AirLevel);
+    ADD_PARAMETER("Air Decay", "ms", kParamAirDecayMs, KickDrum::KickParameterId::AirDecayMs);
+    ADD_PARAMETER("Beater Hardness", "Hz", kParamBeaterHardnessHz, KickDrum::KickParameterId::BeaterHardnessHz);
     ADD_PARAMETER("Output Gain", "", kParamOutputGain, KickDrum::KickParameterId::OutputGain);
 
 #undef ADD_PARAMETER
@@ -172,6 +172,17 @@ void KickSynthController::endParameterEdit(KickDrum::KickParameterId id) {
 
 void KickSynthController::triggerAudition() {
     sendMessageID(kAuditionMessageId);
+}
+
+void KickSynthController::setAuditionLoop(bool enabled, float bpm) {
+    if (auto message = owned(allocateMessage())) {
+        message->setMessageID(kAuditionLoopMessageId);
+        if (auto* attributes = message->getAttributes()) {
+            attributes->setInt(kAuditionLoopEnabledAttribute, enabled ? 1 : 0);
+            attributes->setFloat(kAuditionLoopBpmAttribute, bpm);
+            sendMessage(message);
+        }
+    }
 }
 
 float KickSynthController::getOutputPeak() {

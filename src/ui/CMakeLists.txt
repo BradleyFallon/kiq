@@ -12,6 +12,8 @@ target_include_directories(kick_drum_ui
         ${VST3_SDK_PATH}/vstgui4
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/utils
+        ${CMAKE_SOURCE_DIR}/src/audio_engine/voice
 )
 
 target_link_libraries(kick_drum_ui

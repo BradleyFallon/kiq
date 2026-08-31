@@ -3,6 +3,7 @@
 #include "MIDIMessage.h"
 #include "../voice/VoiceAllocator.h"
 #include "../parameters/ParameterManager.h"
+#include <functional>
 #include <map>
 #include <string>
 
@@ -36,6 +37,8 @@ namespace KickDrum {
  */
 class MIDIHandler {
 public:
+    using NoteOnCallback = std::function<void(int note, float velocity)>;
+
     /**
      * @brief Construct a new MIDIHandler
      * 
@@ -201,6 +204,9 @@ public:
      * @param voiceAllocator Pointer to the voice allocator
      */
     void setVoiceAllocator(VoiceAllocator* voiceAllocator);
+
+    /** Route note-ons to a thread-safe sink instead of mutating voices here. */
+    void setNoteOnCallback(NoteOnCallback callback);
     
     /**
      * @brief Get the voice allocator
@@ -266,6 +272,8 @@ private:
     
     // Voice allocator for routing MIDI messages
     VoiceAllocator* voiceAllocator_;
+
+    NoteOnCallback noteOnCallback_;
     
     // Parameter manager for CC mapping
     ParameterManager* parameterManager_;

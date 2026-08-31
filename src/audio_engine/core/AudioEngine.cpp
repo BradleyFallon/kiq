@@ -29,8 +29,16 @@ public:
     std::vector<float> monoBuffer;
     std::vector<ParameterEvent> currentEvents;
     std::atomic<std::uint32_t> pendingNoteOn {0};
+    std::atomic<bool> requestedAuditionLoopEnabled {false};
+    std::atomic<float> requestedAuditionLoopBpm {120.0f};
+    std::atomic<std::uint32_t> auditionLoopRevision {0};
     std::atomic<float> outputPeak {0.0f};
     std::atomic<bool> outputClip {false};
+    std::uint32_t appliedAuditionLoopRevision = 0;
+    std::uint64_t samplesUntilAuditionHit = 0;
+    std::uint64_t auditionIntervalSamples = 24000;
+    bool auditionLoopStateInitialized = false;
+    bool auditionLoopEnabled = false;
 
     bool applyParameter(const std::string& parameterId, float value) {
         const auto* spec = findKickParameterSpec(parameterId);
@@ -50,6 +58,54 @@ public:
             }
         }
         return true;
+    }
+
+    std::uint64_t auditionIntervalForBpm(float bpm) const {
+        const double interval = static_cast<double>(sampleRate) * 60.0 /
+                                static_cast<double>(bpm);
+        return std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(std::llround(interval)));
+    }
+
+    void synchronizeAuditionLoop() {
+        std::uint32_t revision = auditionLoopRevision.load(std::memory_order_acquire);
+        if (auditionLoopStateInitialized &&
+            revision == appliedAuditionLoopRevision) {
+            return;
+        }
+
+        bool enabled = false;
+        float bpm = 120.0f;
+        std::uint32_t stableRevision = revision;
+        do {
+            revision = stableRevision;
+            enabled = requestedAuditionLoopEnabled.load(std::memory_order_relaxed);
+            bpm = requestedAuditionLoopBpm.load(std::memory_order_relaxed);
+            stableRevision = auditionLoopRevision.load(std::memory_order_acquire);
+        } while (stableRevision != revision);
+
+        const auto newInterval = auditionIntervalForBpm(bpm);
+        if (enabled && !auditionLoopEnabled) {
+            samplesUntilAuditionHit = 0;
+        } else if (enabled && auditionLoopEnabled &&
+                   newInterval != auditionIntervalSamples &&
+                   samplesUntilAuditionHit > 0) {
+            const double phaseRemaining =
+                static_cast<double>(samplesUntilAuditionHit) /
+                static_cast<double>(auditionIntervalSamples);
+            samplesUntilAuditionHit = std::max<std::uint64_t>(
+                1, static_cast<std::uint64_t>(
+                       std::llround(phaseRemaining *
+                                    static_cast<double>(newInterval))));
+        }
+
+        auditionLoopEnabled = enabled;
+        auditionIntervalSamples = newInterval;
+        if (!enabled) {
+            samplesUntilAuditionHit = 0;
+        }
+        appliedAuditionLoopRevision = stableRevision;
+        auditionLoopStateInitialized = true;
     }
 };
 
@@ -73,6 +129,9 @@ void AudioEngine::initialize(float sampleRate) {
     }
     pImpl->parameterEventQueue->clear();
     pImpl->pendingNoteOn.store(0, std::memory_order_release);
+    pImpl->auditionLoopEnabled = false;
+    pImpl->auditionLoopStateInitialized = false;
+    pImpl->samplesUntilAuditionHit = 0;
     pImpl->outputPeak.store(0.0f, std::memory_order_release);
     pImpl->outputClip.store(false, std::memory_order_release);
 }
@@ -95,6 +154,14 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
     }
     std::fill_n(pImpl->monoBuffer.data(), numSamples, 0.0f);
 
+    pImpl->parameterEventQueue->getEventsForBuffer(pImpl->currentEvents);
+    std::size_t eventIndex = 0;
+    while (eventIndex < pImpl->currentEvents.size() &&
+           pImpl->currentEvents[eventIndex].sampleOffset == 0) {
+        const auto& event = pImpl->currentEvents[eventIndex++];
+        pImpl->applyParameter(event.parameterId, event.value);
+    }
+
     const std::uint32_t packedNote =
         pImpl->pendingNoteOn.exchange(0, std::memory_order_acquire);
     if (packedNote != 0) {
@@ -104,10 +171,9 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
         pImpl->voiceAllocator->allocateVoice(note, velocity);
     }
 
-    pImpl->parameterEventQueue->getEventsForBuffer(pImpl->currentEvents);
+    pImpl->synchronizeAuditionLoop();
 
     std::size_t currentSample = 0;
-    std::size_t eventIndex = 0;
     while (currentSample < numSamples) {
         while (eventIndex < pImpl->currentEvents.size() &&
                pImpl->currentEvents[eventIndex].sampleOffset <= currentSample) {
@@ -115,17 +181,33 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
             pImpl->applyParameter(event.parameterId, event.value);
         }
 
+        if (pImpl->auditionLoopEnabled &&
+            pImpl->samplesUntilAuditionHit == 0) {
+            pImpl->voiceAllocator->allocateVoice(36, 1.0f);
+            pImpl->samplesUntilAuditionHit = pImpl->auditionIntervalSamples;
+        }
+
         const std::size_t nextEventSample =
             eventIndex < pImpl->currentEvents.size()
                 ? std::min<std::size_t>(pImpl->currentEvents[eventIndex].sampleOffset,
                                         numSamples)
                 : numSamples;
-        const std::size_t samplesToRender = nextEventSample - currentSample;
+        std::size_t samplesToRender = nextEventSample - currentSample;
+        if (pImpl->auditionLoopEnabled) {
+            samplesToRender = std::min<std::size_t>(
+                samplesToRender,
+                static_cast<std::size_t>(std::min<std::uint64_t>(
+                    pImpl->samplesUntilAuditionHit,
+                    static_cast<std::uint64_t>(numSamples - currentSample))));
+        }
         if (samplesToRender > 0) {
             pImpl->voiceAllocator->renderBuffer(
                 pImpl->monoBuffer.data() + currentSample,
                 static_cast<int>(samplesToRender));
-            currentSample = nextEventSample;
+            currentSample += samplesToRender;
+            if (pImpl->auditionLoopEnabled) {
+                pImpl->samplesUntilAuditionHit -= samplesToRender;
+            }
         }
     }
 
@@ -192,6 +274,14 @@ void AudioEngine::enqueueNoteOn(int note, float velocity) {
         std::lround(std::clamp(velocity, 0.0f, 1.0f) * 65535.0f));
     pImpl->pendingNoteOn.store(encodedNote | (encodedVelocity << 8u),
                                std::memory_order_release);
+}
+
+void AudioEngine::setAuditionLoop(bool enabled, float bpm) {
+    const float safeBpm = std::isfinite(bpm) ? bpm : 120.0f;
+    pImpl->requestedAuditionLoopBpm.store(
+        std::clamp(safeBpm, 40.0f, 240.0f), std::memory_order_relaxed);
+    pImpl->requestedAuditionLoopEnabled.store(enabled, std::memory_order_relaxed);
+    pImpl->auditionLoopRevision.fetch_add(1, std::memory_order_release);
 }
 
 void AudioEngine::noteOff(int note) {

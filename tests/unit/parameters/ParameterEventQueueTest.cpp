@@ -15,7 +15,7 @@ TEST_F(ParameterEventQueueTest, AddAndRetrieveEvents) {
     // Add some events
     queue.addEvent("pitch0Hz", 220.0f, 0);
     queue.addEvent("outputGain", 0.8f, 100);
-    queue.addEvent("noiseDecayMs", 7.0f, 50);
+    queue.addEvent("airDecayMs", 7.0f, 50);
     
     EXPECT_EQ(queue.getEventCount(), 3);
     EXPECT_FALSE(queue.isEmpty());
@@ -32,7 +32,7 @@ TEST_F(ParameterEventQueueTest, AddAndRetrieveEvents) {
     ASSERT_EQ(events.size(), 3);
     EXPECT_EQ(events[0].parameterId, "pitch0Hz");
     EXPECT_EQ(events[0].sampleOffset, 0);
-    EXPECT_EQ(events[1].parameterId, "noiseDecayMs");
+    EXPECT_EQ(events[1].parameterId, "airDecayMs");
     EXPECT_EQ(events[1].sampleOffset, 50);
     EXPECT_EQ(events[2].parameterId, "outputGain");
     EXPECT_EQ(events[2].sampleOffset, 100);

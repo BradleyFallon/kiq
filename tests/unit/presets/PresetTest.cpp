@@ -220,7 +220,7 @@ TEST(PresetTest, FromJSONManyParameters) {
             "sineLevel": 0.8,
             "harmonicRatio": 2.0,
             "harmonicLevel": 0.3,
-            "noiseLevel": 0.2,
+            "airLevel": 0.2,
             "attack": 0.001,
             "decay": 0.5,
             "sustain": 0.0,

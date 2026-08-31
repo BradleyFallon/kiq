@@ -51,6 +51,7 @@ public:
     void performParameterEdit(KickDrum::KickParameterId id, float plainValue) override;
     void endParameterEdit(KickDrum::KickParameterId id) override;
     void triggerAudition() override;
+    void setAuditionLoop(bool enabled, float bpm) override;
     float getOutputPeak() override;
     bool getOutputClip() override;
 

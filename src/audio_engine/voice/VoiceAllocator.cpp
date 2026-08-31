@@ -26,7 +26,14 @@ void VoiceAllocator::setSampleRate(float sampleRate) {
 void VoiceAllocator::setParams(const KickParams& params) {
     params_ = sanitizeKickParams(params);
     for (auto& voice : voices_) {
-        voice.setParams(params_);
+        if (voice.isActive()) {
+            // A kick is a physical event: keep its trajectory, membrane, and
+            // transient snapshot stable for the rest of that hit. Output is
+            // the one live control and is ramped inside Voice to avoid clicks.
+            voice.setOutputGain(params_.outputGain);
+        } else {
+            voice.setParams(params_);
+        }
     }
 }
 

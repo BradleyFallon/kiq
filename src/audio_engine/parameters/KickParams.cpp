@@ -40,11 +40,11 @@ float getKickParameter(const KickParams& params, KickParameterId id) {
         case KickParameterId::AmpCurve1: return params.amplitude[0].curve;
         case KickParameterId::AmpCurve2: return params.amplitude[1].curve;
         case KickParameterId::AmpCurve3: return params.amplitude[2].curve;
-        case KickParameterId::StartPhase: return params.startPhase;
-        case KickParameterId::ClickLevel: return params.transient.clickLevel;
-        case KickParameterId::NoiseLevel: return params.transient.noiseLevel;
-        case KickParameterId::NoiseDecayMs: return params.transient.noiseDecayMs;
-        case KickParameterId::NoiseToneHz: return params.transient.noiseToneHz;
+        case KickParameterId::StrikePosition: return params.strikePosition;
+        case KickParameterId::ImpactLevel: return params.transient.impactLevel;
+        case KickParameterId::AirLevel: return params.transient.airLevel;
+        case KickParameterId::AirDecayMs: return params.transient.airDecayMs;
+        case KickParameterId::BeaterHardnessHz: return params.transient.beaterHardnessHz;
         case KickParameterId::OutputGain: return params.outputGain;
         case KickParameterId::Count: break;
     }
@@ -79,11 +79,11 @@ void setKickParameter(KickParams& params, KickParameterId id, float value) {
         case KickParameterId::AmpCurve1: params.amplitude[0].curve = value; break;
         case KickParameterId::AmpCurve2: params.amplitude[1].curve = value; break;
         case KickParameterId::AmpCurve3: params.amplitude[2].curve = value; break;
-        case KickParameterId::StartPhase: params.startPhase = value; break;
-        case KickParameterId::ClickLevel: params.transient.clickLevel = value; break;
-        case KickParameterId::NoiseLevel: params.transient.noiseLevel = value; break;
-        case KickParameterId::NoiseDecayMs: params.transient.noiseDecayMs = value; break;
-        case KickParameterId::NoiseToneHz: params.transient.noiseToneHz = value; break;
+        case KickParameterId::StrikePosition: params.strikePosition = value; break;
+        case KickParameterId::ImpactLevel: params.transient.impactLevel = value; break;
+        case KickParameterId::AirLevel: params.transient.airLevel = value; break;
+        case KickParameterId::AirDecayMs: params.transient.airDecayMs = value; break;
+        case KickParameterId::BeaterHardnessHz: params.transient.beaterHardnessHz = value; break;
         case KickParameterId::OutputGain: params.outputGain = value; break;
         case KickParameterId::Count: break;
     }

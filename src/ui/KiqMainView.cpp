@@ -1,6 +1,8 @@
 #include "KiqMainView.h"
 
+#include "DSPUtils.h"
 #include "Trajectory.h"
+#include "Voice.h"
 
 #include "vstgui/lib/cdrawcontext.h"
 #include "vstgui/lib/cgraphicspath.h"
@@ -52,6 +54,19 @@ float normalizePlain(KickParameterId id, float plainValue) {
     if (!spec || spec->maximum <= spec->minimum) {
         return 0.0f;
     }
+    if (id == KickParameterId::BeaterHardnessHz || id == KickParameterId::AirDecayMs) {
+        const float clamped = std::clamp(plainValue, spec->minimum, spec->maximum);
+        return (std::log(clamped) - std::log(spec->minimum)) /
+               (std::log(spec->maximum) - std::log(spec->minimum));
+    }
+    if (id == KickParameterId::OutputGain) {
+        if (plainValue <= 0.0f) {
+            return 0.0f;
+        }
+        constexpr float minimumDb = -60.0f;
+        const float db = std::clamp(20.0f * std::log10(plainValue), minimumDb, 0.0f);
+        return (db - minimumDb) / -minimumDb;
+    }
     return std::clamp((plainValue - spec->minimum) / (spec->maximum - spec->minimum),
                       0.0f, 1.0f);
 }
@@ -62,6 +77,18 @@ float denormalizePlain(KickParameterId id, float normalizedValue) {
         return normalizedValue;
     }
     const float normalized = std::clamp(normalizedValue, 0.0f, 1.0f);
+    if (id == KickParameterId::BeaterHardnessHz || id == KickParameterId::AirDecayMs) {
+        return std::exp(std::log(spec->minimum) +
+                        normalized * (std::log(spec->maximum) -
+                                      std::log(spec->minimum)));
+    }
+    if (id == KickParameterId::OutputGain) {
+        if (normalized <= 0.0f) {
+            return 0.0f;
+        }
+        constexpr float minimumDb = -60.0f;
+        return std::pow(10.0f, (minimumDb + normalized * -minimumDb) / 20.0f);
+    }
     return spec->minimum + normalized * (spec->maximum - spec->minimum);
 }
 
@@ -112,17 +139,17 @@ const char* formatFrequency(float hz, char (&buffer)[32]) {
 
 const char* formatParameter(KickParameterId id, float plainValue, char (&buffer)[32]) {
     switch (id) {
-        case KickParameterId::StartPhase:
-            std::snprintf(buffer, sizeof(buffer), "%.0f deg", plainValue * 360.0f);
-            break;
-        case KickParameterId::ClickLevel:
-        case KickParameterId::NoiseLevel:
+        case KickParameterId::StrikePosition:
             std::snprintf(buffer, sizeof(buffer), "%.0f %%", plainValue * 100.0f);
             break;
-        case KickParameterId::NoiseDecayMs:
+        case KickParameterId::ImpactLevel:
+        case KickParameterId::AirLevel:
+            std::snprintf(buffer, sizeof(buffer), "%.0f %%", plainValue * 100.0f);
+            break;
+        case KickParameterId::AirDecayMs:
             std::snprintf(buffer, sizeof(buffer), "%.1f ms", plainValue);
             break;
-        case KickParameterId::NoiseToneHz:
+        case KickParameterId::BeaterHardnessHz:
             formatFrequency(plainValue, buffer);
             break;
         case KickParameterId::OutputGain:
@@ -153,13 +180,15 @@ KiqMainView::KiqMainView(const CRect& size, KiqUIBridge& bridge)
     setMouseEnabled(true);
     setWantsFocus(true);
     syncFromBridge();
-    timer_ = makeOwned<CVSTGUITimer>([this](CVSTGUITimer*) { syncFromBridge(); }, 33);
+    rebuildWaveformPreview();
+    timer_ = makeOwned<CVSTGUITimer>([this](CVSTGUITimer*) { timerTick(); }, 33);
 }
 
 KiqMainView::~KiqMainView() noexcept {
     if (timer_) {
         timer_->stop();
     }
+    bridge_.setAuditionLoop(false, loopBpm_);
 }
 
 float KiqMainView::value(KickParameterId id) const {
@@ -168,20 +197,30 @@ float KiqMainView::value(KickParameterId id) const {
 
 void KiqMainView::setValue(KickParameterId id, float plainValue) {
     const float clamped = clampPlain(id, plainValue);
+    if (std::abs(value(id) - clamped) <= 1.0e-6f) {
+        return;
+    }
     values_[parameterIndex(id)] = clamped;
+    waveformDirty_ = true;
     bridge_.performParameterEdit(id, clamped);
     invalid();
 }
 
 void KiqMainView::syncFromBridge() {
     bool changed = false;
+    bool parametersChanged = false;
     for (const auto& spec : kKickParameterSpecs) {
         const auto index = parameterIndex(spec.id);
         const float next = clampPlain(spec.id, bridge_.getParameter(spec.id));
         if (std::abs(values_[index] - next) > 1.0e-5f) {
             values_[index] = next;
             changed = true;
+            parametersChanged = true;
         }
+    }
+
+    if (parametersChanged) {
+        waveformDirty_ = true;
     }
 
     const float targetPeak = std::clamp(bridge_.getOutputPeak(), 0.0f, 1.0f);
@@ -206,6 +245,83 @@ void KiqMainView::syncFromBridge() {
     }
 }
 
+void KiqMainView::timerTick() {
+    syncFromBridge();
+    // Long (up to two-second) previews are intentionally rebuilt after a drag
+    // settles, keeping trajectory and knob interaction responsive.
+    if (waveformDirty_ && drag_.kind == DragKind::None) {
+        rebuildWaveformPreview();
+        invalid();
+    }
+}
+
+void KiqMainView::rebuildWaveformPreview() {
+    constexpr float previewSampleRate = 48000.0f;
+
+    KickParams params = kDefaultKickParams;
+    for (const auto& spec : kKickParameterSpecs) {
+        setKickParameter(params, spec.id, value(spec.id));
+    }
+    params = sanitizeKickParams(params);
+
+    waveformDurationMs_ = std::max(
+        params.amplitude.back().timeMs + Voice::kTailFadeMs,
+        params.transient.airDecayMs);
+    const std::size_t sampleCount = std::max<std::size_t>(
+        2, static_cast<std::size_t>(std::ceil(
+               waveformDurationMs_ * previewSampleRate / 1000.0f)) + 1);
+    waveformBinsUsed_ = std::min(kWaveformBinCount, sampleCount);
+    std::fill(waveformSamples_.begin(), waveformSamples_.end(), 0.0f);
+    std::fill(tuningSamplesHz_.begin(), tuningSamplesHz_.end(), 0.0f);
+
+    Voice voice;
+    voice.initialize(previewSampleRate);
+    voice.setParams(params);
+    voice.trigger(36, 1.0f);
+    waveformPeak_ = 0.0f;
+
+    for (std::size_t sample = 0; sample < sampleCount; ++sample) {
+        const float rendered = DSPUtils::softClip(voice.renderSample());
+        waveformPeak_ = std::max(waveformPeak_, std::abs(rendered));
+        const std::size_t bin = std::min(
+            waveformBinsUsed_ - 1, sample * waveformBinsUsed_ / sampleCount);
+        // Keep the strongest sample in each pixel-width time bucket. This
+        // preserves the short impact and body peaks while still drawing a
+        // single, unfilled waveform line.
+        if (std::abs(rendered) > std::abs(waveformSamples_[bin])) {
+            waveformSamples_[bin] = rendered;
+        }
+    }
+
+    Trajectory tuningTrajectory(Trajectory::Scale::Logarithmic);
+    tuningTrajectory.setPoints(params.pitch);
+    for (std::size_t bin = 0; bin < waveformBinsUsed_; ++bin) {
+        const float timeMs = waveformDurationMs_ * static_cast<float>(bin) /
+                             static_cast<float>(waveformBinsUsed_ - 1);
+        tuningSamplesHz_[bin] = tuningTrajectory.valueAt(timeMs);
+    }
+    waveformDirty_ = false;
+}
+
+void KiqMainView::setLoopBpm(float bpm) {
+    const float next = std::clamp(bpm, 40.0f, 240.0f);
+    if (std::abs(loopBpm_ - next) < 0.01f) {
+        return;
+    }
+    loopBpm_ = next;
+    bridge_.setAuditionLoop(loopEnabled_, loopBpm_);
+    invalid();
+}
+
+void KiqMainView::setLoopEnabled(bool enabled) {
+    if (loopEnabled_ == enabled) {
+        return;
+    }
+    loopEnabled_ = enabled;
+    bridge_.setAuditionLoop(loopEnabled_, loopBpm_);
+    invalid();
+}
+
 void KiqMainView::draw(CDrawContext* context) {
     if (!context) {
         return;
@@ -215,6 +331,7 @@ void KiqMainView::draw(CDrawContext* context) {
     drawHeader(*context);
     drawTrajectory(*context, TrajectoryKind::Pitch);
     drawTrajectory(*context, TrajectoryKind::Amplitude);
+    drawWaveformPreview(*context);
     drawControls(*context);
     setDirty(false);
 }
@@ -367,8 +484,10 @@ void KiqMainView::drawTrajectory(CDrawContext& context, TrajectoryKind kind) {
     inner.inset(4.0, 4.0);
     fillRoundedRect(context, inner, 9.0, CColor(13, 16, 17, 255), kPanelInner, 1.0);
 
-    drawText(context, sectionFont_, 17.0, accent, pitch ? "PITCH" : "AMPLITUDE",
-             CRect(42.0, panel.top + 10.0, 240.0, panel.top + 34.0), kLeftText, kBoldFace);
+    drawText(context, sectionFont_, 17.0, accent,
+             pitch ? "MEMBRANE TENSION" : "ENERGY DECAY",
+             CRect(42.0, panel.top + 10.0, 290.0, panel.top + 34.0),
+             kLeftText, kBoldFace);
 
     context.setFrameColor(kGrid);
     context.setLineWidth(1.0);
@@ -498,32 +617,203 @@ void KiqMainView::drawTrajectory(CDrawContext& context, TrajectoryKind kind) {
     }
 }
 
+void KiqMainView::drawWaveformPreview(CDrawContext& context) {
+    const CRect panel(14.0, 528.0, kDesignWidth - 14.0, 680.0);
+    fillRoundedRect(context, panel, 12.0, kPanel, kPanelEdge, 1.2);
+    CRect inner = panel;
+    inner.inset(4.0, 4.0);
+    fillRoundedRect(context, inner, 9.0, CColor(13, 16, 17, 255), kPanelInner, 1.0);
+
+    drawText(context, sectionFont_, 17.0, kAmplitude, "RESPONSE",
+             CRect(42.0, 538.0, 170.0, 560.0), kLeftText, kBoldFace);
+    drawText(context, valueFont_, 9.0, kAmplitude, "WAVEFORM",
+             CRect(174.0, 540.0, 252.0, 558.0), kLeftText, kBoldFace);
+    char tuningBuffer[48] {};
+    if (waveformBinsUsed_ > 1) {
+        std::snprintf(tuningBuffer, sizeof(tuningBuffer), "+ TUNING  %.0f -> %.0f Hz",
+                      tuningSamplesHz_.front(),
+                      tuningSamplesHz_[waveformBinsUsed_ - 1]);
+    } else {
+        std::snprintf(tuningBuffer, sizeof(tuningBuffer), "+ TUNING");
+    }
+    drawText(context, valueFont_, 9.0, kPitch, tuningBuffer,
+             CRect(255.0, 540.0, 460.0, 558.0), kLeftText, kBoldFace);
+
+    const CRect graph(42.0, 562.0, 820.0, 653.0);
+    fillRoundedRect(context, graph, 5.0, CColor(7, 10, 11, 255),
+                    CColor(37, 42, 42, 255), 1.0);
+
+    const CRect plot(88.0, graph.top + 3.0, graph.right - 4.0, graph.bottom - 3.0);
+    const double separatorY = (plot.top + plot.bottom) * 0.5;
+    const CRect waveformLane(plot.left, plot.top, plot.right, separatorY - 3.0);
+    const CRect tuningLane(plot.left, separatorY + 3.0, plot.right, plot.bottom);
+
+    context.setFrameColor(kGrid);
+    context.setLineWidth(1.0);
+    for (int line = 1; line < 8; ++line) {
+        const double x = plot.left + plot.getWidth() * line / 8.0;
+        context.drawLine(CPoint(x, plot.top), CPoint(x, plot.bottom));
+    }
+    context.setFrameColor(CColor(75, 82, 81, 170));
+    const double waveformCenterY = (waveformLane.top + waveformLane.bottom) * 0.5;
+    context.drawLine(CPoint(plot.left, waveformCenterY),
+                     CPoint(plot.right, waveformCenterY));
+    context.setFrameColor(CColor(55, 59, 59, 170));
+    context.drawLine(CPoint(graph.left + 4.0, separatorY),
+                     CPoint(graph.right - 4.0, separatorY));
+
+    drawText(context, valueFont_, 8.0, kAmplitude, "AUDIO",
+             CRect(47.0, waveformLane.top + 8.0, 83.0, waveformLane.top + 22.0),
+             kLeftText, kBoldFace);
+    drawText(context, valueFont_, 8.0, kPitch, "PITCH",
+             CRect(47.0, tuningLane.top + 8.0, 83.0, tuningLane.top + 22.0),
+             kLeftText, kBoldFace);
+
+    if (waveformBinsUsed_ > 1) {
+        const double waveformHalfHeight = waveformLane.getHeight() * 0.45;
+        auto waveformPath = owned(context.createGraphicsPath());
+        auto tuningPath = owned(context.createGraphicsPath());
+        if (waveformPath && tuningPath) {
+            for (std::size_t bin = 0; bin < waveformBinsUsed_; ++bin) {
+                const double x = plot.left + plot.getWidth() *
+                    static_cast<double>(bin) /
+                    static_cast<double>(waveformBinsUsed_ - 1);
+                const CPoint waveformPoint(
+                    x, waveformCenterY - waveformSamples_[bin] * waveformHalfHeight);
+
+                constexpr float minimumPitchHz = 20.0f;
+                constexpr float maximumPitchHz = 1000.0f;
+                const float pitchHz = std::clamp(
+                    tuningSamplesHz_[bin], minimumPitchHz, maximumPitchHz);
+                const float pitchNormalized =
+                    (std::log(pitchHz) - std::log(minimumPitchHz)) /
+                    (std::log(maximumPitchHz) - std::log(minimumPitchHz));
+                const CPoint tuningPoint(
+                    x, tuningLane.bottom - pitchNormalized * tuningLane.getHeight());
+
+                if (bin == 0) {
+                    waveformPath->beginSubpath(waveformPoint);
+                    tuningPath->beginSubpath(tuningPoint);
+                } else {
+                    waveformPath->addLine(waveformPoint);
+                    tuningPath->addLine(tuningPoint);
+                }
+            }
+            context.setFrameColor(kAmplitude);
+            context.setLineWidth(1.25);
+            context.drawGraphicsPath(waveformPath, CDrawContext::kPathStroked);
+            context.setFrameColor(kPitch);
+            context.setLineWidth(1.8);
+            context.drawGraphicsPath(tuningPath, CDrawContext::kPathStroked);
+        }
+    }
+
+    char durationBuffer[32] {};
+    formatTime(waveformDurationMs_, durationBuffer);
+    drawText(context, valueFont_, 8.8, kMutedText, "0 ms",
+             CRect(graph.left, 655.0, graph.left + 64.0, 672.0), kLeftText);
+    drawText(context, valueFont_, 8.8, kMutedText, durationBuffer,
+             CRect(graph.right - 80.0, 655.0, graph.right, 672.0), kRightText);
+
+    char peakBuffer[32] {};
+    if (waveformPeak_ <= 0.00001f) {
+        std::snprintf(peakBuffer, sizeof(peakBuffer), "PEAK  -inf dB");
+    } else {
+        std::snprintf(peakBuffer, sizeof(peakBuffer), "PEAK  %.1f dB",
+                      20.0f * std::log10(waveformPeak_));
+    }
+    drawText(context, valueFont_, 9.0, kMutedText, peakBuffer,
+             CRect(670.0, 540.0, graph.right, 558.0), kRightText);
+
+    context.setFrameColor(CColor(74, 78, 77, 255));
+    context.drawLine(CPoint(840.0, 544.0), CPoint(840.0, 664.0));
+    drawLoopControls(context);
+}
+
+void KiqMainView::drawLoopControls(CDrawContext& context) {
+    const CRect button(855.0, 558.0, 944.0, 652.0);
+    fillRoundedRect(context, button, 9.0,
+                    loopEnabled_ ? CColor(20, 49, 51, 255) : CColor(9, 12, 13, 255),
+                    loopEnabled_ ? kAmplitude : CColor(71, 76, 75, 255), 2.0);
+    CRect buttonInner = button;
+    buttonInner.inset(5.0, 5.0);
+    fillRoundedRect(context, buttonInner, 6.0, CColor(18, 22, 23, 255),
+                    CColor(4, 6, 7, 255), 1.0);
+    context.setFillColor(loopEnabled_ ? kAmplitude : CColor(58, 63, 62, 255));
+    context.drawEllipse(CRect(894.0, 572.0, 905.0, 583.0), kDrawFilled);
+    drawText(context, labelFont_, 10.0, kText, "LOOP",
+             CRect(855.0, 592.0, 944.0, 611.0), kCenterText, kBoldFace);
+    drawText(context, valueFont_, 8.5, loopEnabled_ ? kAmplitude : kMutedText,
+             loopEnabled_ ? "RUNNING" : "OFF",
+             CRect(855.0, 617.0, 944.0, 637.0), kCenterText);
+
+    constexpr double minimumBpm = 40.0;
+    constexpr double maximumBpm = 240.0;
+    const CPoint center(1019.0, 602.0);
+    constexpr double radius = 31.0;
+    constexpr double startAngle = 135.0;
+    constexpr double sweep = 270.0;
+    const double normalized = (loopBpm_ - minimumBpm) / (maximumBpm - minimumBpm);
+    const double angle = (startAngle + sweep * normalized) * kPi / 180.0;
+
+    drawText(context, labelFont_, 9.5, kText, "TEMPO",
+             CRect(970.0, 540.0, 1068.0, 557.0), kCenterText, kBoldFace);
+    CRect outer(center.x - radius - 4.0, center.y - radius - 4.0,
+                center.x + radius + 4.0, center.y + radius + 4.0);
+    context.setFrameColor(CColor(54, 58, 58, 255));
+    context.setLineWidth(4.0);
+    context.drawArc(outer, static_cast<float>(startAngle),
+                    static_cast<float>(startAngle + sweep), kDrawStroked);
+    context.setFrameColor(kAmplitude);
+    context.setLineWidth(2.5);
+    context.drawArc(outer, static_cast<float>(startAngle),
+                    static_cast<float>(startAngle + sweep * normalized), kDrawStroked);
+    CRect face(center.x - radius, center.y - radius,
+               center.x + radius, center.y + radius);
+    context.setFillColor(kKnobFace);
+    context.setFrameColor(kKnobEdge);
+    context.setLineWidth(1.5);
+    context.drawEllipse(face, kDrawFilledAndStroked);
+    context.setFrameColor(kText);
+    context.setLineWidth(2.5);
+    context.drawLine(center,
+                     CPoint(center.x + std::cos(angle) * radius * 0.7,
+                            center.y + std::sin(angle) * radius * 0.7));
+
+    char bpmBuffer[32] {};
+    std::snprintf(bpmBuffer, sizeof(bpmBuffer), "%.0f BPM", loopBpm_);
+    const CRect valueRect(974.0, 641.0, 1064.0, 661.0);
+    fillRoundedRect(context, valueRect, 4.0, CColor(10, 13, 14, 255),
+                    CColor(51, 56, 56, 255), 1.0);
+    drawText(context, valueFont_, 9.5, kAmplitude, bpmBuffer, valueRect, kCenterText);
+}
+
 const std::array<KickParameterId, 6>& KiqMainView::knobParameterIds() {
     static constexpr std::array<KickParameterId, 6> ids {
-        KickParameterId::StartPhase,
-        KickParameterId::ClickLevel,
-        KickParameterId::NoiseLevel,
-        KickParameterId::NoiseDecayMs,
-        KickParameterId::NoiseToneHz,
+        KickParameterId::StrikePosition,
+        KickParameterId::ImpactLevel,
+        KickParameterId::AirLevel,
+        KickParameterId::AirDecayMs,
+        KickParameterId::BeaterHardnessHz,
         KickParameterId::OutputGain,
     };
     return ids;
 }
 
 std::array<CPoint, 6> KiqMainView::knobCenters() const {
-    return {CPoint(96.0, 607.0), CPoint(244.0, 607.0), CPoint(392.0, 607.0),
-            CPoint(708.0, 607.0), CPoint(836.0, 607.0), CPoint(995.0, 607.0)};
+    return {CPoint(96.0, 767.0), CPoint(244.0, 767.0), CPoint(392.0, 767.0),
+            CPoint(708.0, 767.0), CPoint(836.0, 767.0), CPoint(995.0, 767.0)};
 }
 
 void KiqMainView::drawControls(CDrawContext& context) {
-    const CRect panel(14.0, 528.0, kDesignWidth - 14.0, kDesignHeight - 12.0);
+    const CRect panel(14.0, 688.0, kDesignWidth - 14.0, kDesignHeight - 12.0);
     fillRoundedRect(context, panel, 12.0, kPanel, kPanelEdge, 1.2);
     CRect inner = panel;
     inner.inset(4.0, 4.0);
     fillRoundedRect(context, inner, 9.0, CColor(17, 20, 21, 255), kPanelInner, 1.0);
 
     static constexpr std::array<const char*, 6> labels {
-        "START PHASE", "CLICK", "NOISE", "DECAY", "TONE", "OUTPUT",
+        "STRIKE POS", "IMPACT", "AIR", "AIR DECAY", "BEATER", "OUTPUT",
     };
     const auto centers = knobCenters();
     const auto& ids = knobParameterIds();
@@ -542,7 +832,7 @@ void KiqMainView::drawKnob(CDrawContext& context, KickParameterId id,
     const double angle = (startAngle + sweep * normalized) * kPi / 180.0;
 
     drawText(context, labelFont_, 10.5, kText, label,
-             CRect(center.x - 65.0, 544.0, center.x + 65.0, 561.0),
+             CRect(center.x - 65.0, 704.0, center.x + 65.0, 721.0),
              kCenterText, kBoldFace);
 
     CRect outer(center.x - radius - 5.0, center.y - radius - 5.0,
@@ -572,21 +862,21 @@ void KiqMainView::drawKnob(CDrawContext& context, KickParameterId id,
     context.setFrameColor(kText);
     context.setLineWidth(radius > 40.0 ? 4.0 : 3.0);
     context.drawLine(center,
-                     CPoint(center.x + std::sin(angle) * pointerLength,
-                            center.y - std::cos(angle) * pointerLength));
+                     CPoint(center.x + std::cos(angle) * pointerLength,
+                            center.y + std::sin(angle) * pointerLength));
 
     char valueBuffer[32] {};
     formatParameter(id, value(id), valueBuffer);
     const double width = radius > 40.0 ? 90.0 : 78.0;
-    const CRect valueRect(center.x - width * 0.5, 661.0,
-                          center.x + width * 0.5, 681.0);
+    const CRect valueRect(center.x - width * 0.5, 821.0,
+                          center.x + width * 0.5, 841.0);
     fillRoundedRect(context, valueRect, 4.0, CColor(10, 13, 14, 255),
                     CColor(51, 56, 56, 255), 1.0);
     drawText(context, valueFont_, 10.0, kAmplitude, valueBuffer, valueRect, kCenterText);
 }
 
 void KiqMainView::drawHitButton(CDrawContext& context) {
-    const CRect button(493.0, 554.0, 607.0, 660.0);
+    const CRect button(493.0, 714.0, 607.0, 820.0);
     fillRoundedRect(context, button, 10.0,
                     hitPressed_ ? CColor(24, 52, 54, 255) : CColor(9, 12, 13, 255),
                     hitPressed_ ? kAmplitude : CColor(77, 81, 80, 255), 2.0);
@@ -595,21 +885,21 @@ void KiqMainView::drawHitButton(CDrawContext& context) {
     fillRoundedRect(context, inner, 7.0, CColor(19, 23, 24, 255),
                     CColor(4, 6, 7, 255), 1.0);
     context.setFillColor(kAmplitude);
-    context.drawRect(CRect(535.0, 568.0, 565.0, 572.0), kDrawFilled);
+    context.drawRect(CRect(535.0, 728.0, 565.0, 732.0), kDrawFilled);
     drawText(context, titleFont_, 29.0, kText, "HIT",
-             CRect(493.0, 593.0, 607.0, 636.0), kCenterText, kBoldFace);
+             CRect(493.0, 753.0, 607.0, 796.0), kCenterText, kBoldFace);
 }
 
 void KiqMainView::drawMeter(CDrawContext& context) {
     context.setFrameColor(CColor(74, 78, 77, 255));
     context.setLineWidth(1.0);
-    context.drawLine(CPoint(925.0, 548.0), CPoint(925.0, 676.0));
+    context.drawLine(CPoint(925.0, 708.0), CPoint(925.0, 836.0));
 
     drawText(context, labelFont_, 9.0, clipHoldFrames_ > 0 ? kRed : kMutedText, "CLIP",
-             CRect(1060.0, 548.0, 1090.0, 562.0), kCenterText, kBoldFace);
+             CRect(1060.0, 708.0, 1090.0, 722.0), kCenterText, kBoldFace);
     constexpr int segments = 7;
     for (int segment = 0; segment < segments; ++segment) {
-        const double bottom = 654.0 - segment * 14.0;
+        const double bottom = 814.0 - segment * 14.0;
         const CRect led(1067.0, bottom - 8.0, 1085.0, bottom);
         const float threshold = static_cast<float>(segment + 1) / segments;
         CColor on = segment >= segments - 2 ? kRed : kAmplitude;
@@ -721,6 +1011,7 @@ bool KiqMainView::beginKnobDrag(const CPoint& where, bool resetToDefault) {
         drag_.kind = DragKind::Knob;
         drag_.index = index;
         drag_.startMouse = where;
+        drag_.lastMouse = where;
         drag_.startValue = value(id);
         drag_.parameterIds = {id};
         bridge_.beginParameterEdit(id);
@@ -729,13 +1020,39 @@ bool KiqMainView::beginKnobDrag(const CPoint& where, bool resetToDefault) {
     return false;
 }
 
+bool KiqMainView::beginTempoDrag(const CPoint& where, bool resetToDefault) {
+    const CPoint center(1019.0, 602.0);
+    constexpr float hitRadius = 43.0f;
+    if (distanceSquared(where, center) > hitRadius * hitRadius) {
+        return false;
+    }
+    if (resetToDefault) {
+        setLoopBpm(120.0f);
+        return true;
+    }
+    drag_ = {};
+    drag_.kind = DragKind::Tempo;
+    drag_.startMouse = where;
+    drag_.lastMouse = where;
+    drag_.startValue = loopBpm_;
+    return true;
+}
+
 bool KiqMainView::handleHitButton(const CPoint& where) {
-    if (!CRect(493.0, 554.0, 607.0, 660.0).pointInside(where)) {
+    if (!CRect(493.0, 714.0, 607.0, 820.0).pointInside(where)) {
         return false;
     }
     hitPressed_ = true;
     bridge_.triggerAudition();
     invalid();
+    return true;
+}
+
+bool KiqMainView::handleLoopButton(const CPoint& where) {
+    if (!CRect(855.0, 558.0, 944.0, 652.0).pointInside(where)) {
+        return false;
+    }
+    setLoopEnabled(!loopEnabled_);
     return true;
 }
 
@@ -745,6 +1062,8 @@ void KiqMainView::onMouseDownEvent(MouseDownEvent& event) {
     }
     const bool doubleClick = event.clickCount >= 2;
     if (handleHitButton(event.mousePosition) ||
+        handleLoopButton(event.mousePosition) ||
+        beginTempoDrag(event.mousePosition, doubleClick) ||
         beginPointDrag(event.mousePosition) ||
         beginCurveDrag(event.mousePosition) ||
         beginKnobDrag(event.mousePosition, doubleClick)) {
@@ -757,11 +1076,20 @@ void KiqMainView::updateDrag(const CPoint& where, bool fineAdjustment) {
         return;
     }
     const float sensitivity = fineAdjustment ? 0.15f : 1.0f;
+    if (drag_.kind == DragKind::Tempo) {
+        const float delta = static_cast<float>((drag_.lastMouse.y - where.y) / 220.0) *
+                            200.0f * sensitivity;
+        setLoopBpm(loopBpm_ + delta);
+        drag_.lastMouse = where;
+        return;
+    }
     if (drag_.kind == DragKind::Knob) {
         const KickParameterId id = drag_.parameterIds.front();
-        const float startNormalized = normalizePlain(id, drag_.startValue);
-        const float delta = static_cast<float>((drag_.startMouse.y - where.y) / 135.0) * sensitivity;
-        setValue(id, denormalizePlain(id, startNormalized + delta));
+        const float currentNormalized = normalizePlain(id, value(id));
+        const float delta = static_cast<float>((drag_.lastMouse.y - where.y) / 220.0) *
+                            sensitivity;
+        setValue(id, denormalizePlain(id, currentNormalized + delta));
+        drag_.lastMouse = where;
         return;
     }
     if (drag_.kind == DragKind::Curve) {
@@ -838,7 +1166,9 @@ void KiqMainView::endDrag() {
 }
 
 void KiqMainView::cancelDrag() {
-    if (drag_.kind == DragKind::Knob && !drag_.parameterIds.empty()) {
+    if (drag_.kind == DragKind::Tempo) {
+        setLoopBpm(drag_.startValue);
+    } else if (drag_.kind == DragKind::Knob && !drag_.parameterIds.empty()) {
         setValue(drag_.parameterIds.front(), drag_.startValue);
     } else if (drag_.kind == DragKind::Curve && !drag_.parameterIds.empty()) {
         setValue(drag_.parameterIds.front(), drag_.startCurve);
@@ -873,6 +1203,16 @@ void KiqMainView::onMouseCancelEvent(MouseCancelEvent& event) {
 }
 
 void KiqMainView::onMouseWheelEvent(MouseWheelEvent& event) {
+    const CPoint tempoCenter(1019.0, 602.0);
+    constexpr float tempoHitRadius = 43.0f;
+    if (distanceSquared(event.mousePosition, tempoCenter) <=
+        tempoHitRadius * tempoHitRadius) {
+        const float increment = event.modifiers.has(ModifierKey::Shift) ? 1.0f : 5.0f;
+        setLoopBpm(loopBpm_ + static_cast<float>(event.deltaY) * increment);
+        event.consumed = true;
+        return;
+    }
+
     const auto centers = knobCenters();
     const auto& ids = knobParameterIds();
     for (std::size_t index = 0; index < ids.size(); ++index) {

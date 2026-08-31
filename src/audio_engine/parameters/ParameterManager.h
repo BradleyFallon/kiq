@@ -123,8 +123,8 @@ public:
     /**
      * @brief Register all synthesis parameters
      * 
-     * This registers the fixed pitch/amplitude trajectory, transient, phase,
-     * and output parameters.
+     * This registers the fixed pitch/amplitude trajectory, membrane strike,
+     * transient, and output parameters.
      */
     void registerAllSynthesisParameters();
 

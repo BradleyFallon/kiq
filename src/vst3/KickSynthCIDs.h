@@ -39,11 +39,11 @@ enum KickSynthParams : ParamID {
     kParamAmpCurve1,
     kParamAmpCurve2,
     kParamAmpCurve3,
-    kParamStartPhase,
-    kParamClickLevel,
-    kParamNoiseLevel,
-    kParamNoiseDecayMs,
-    kParamNoiseToneHz,
+    kParamStrikePosition,
+    kParamImpactLevel,
+    kParamAirLevel,
+    kParamAirDecayMs,
+    kParamBeaterHardnessHz,
     kParamOutputGain,
 
     // Read-only UI telemetry. These are intentionally outside the engine
@@ -53,6 +53,9 @@ enum KickSynthParams : ParamID {
 };
 
 inline constexpr const char* kAuditionMessageId = "Kiq.Audition";
+inline constexpr const char* kAuditionLoopMessageId = "Kiq.AuditionLoop";
+inline constexpr const char* kAuditionLoopEnabledAttribute = "Enabled";
+inline constexpr const char* kAuditionLoopBpmAttribute = "BPM";
 
 struct KickSynthParameterMapping {
     ParamID vstId;
@@ -82,11 +85,11 @@ inline constexpr std::array<KickSynthParameterMapping,
         {kParamAmpCurve1, KickDrum::KickParameterId::AmpCurve1},
         {kParamAmpCurve2, KickDrum::KickParameterId::AmpCurve2},
         {kParamAmpCurve3, KickDrum::KickParameterId::AmpCurve3},
-        {kParamStartPhase, KickDrum::KickParameterId::StartPhase},
-        {kParamClickLevel, KickDrum::KickParameterId::ClickLevel},
-        {kParamNoiseLevel, KickDrum::KickParameterId::NoiseLevel},
-        {kParamNoiseDecayMs, KickDrum::KickParameterId::NoiseDecayMs},
-        {kParamNoiseToneHz, KickDrum::KickParameterId::NoiseToneHz},
+        {kParamStrikePosition, KickDrum::KickParameterId::StrikePosition},
+        {kParamImpactLevel, KickDrum::KickParameterId::ImpactLevel},
+        {kParamAirLevel, KickDrum::KickParameterId::AirLevel},
+        {kParamAirDecayMs, KickDrum::KickParameterId::AirDecayMs},
+        {kParamBeaterHardnessHz, KickDrum::KickParameterId::BeaterHardnessHz},
         {kParamOutputGain, KickDrum::KickParameterId::OutputGain},
     }};
 

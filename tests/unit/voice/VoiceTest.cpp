@@ -2,6 +2,7 @@
 
 #include "audio_engine/voice/Voice.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -62,13 +63,18 @@ TEST(VoiceTest, TransientIsGoneWellBeforeBodyEnds) {
     withTransient.initialize(48000.0f);
     bodyOnly.initialize(48000.0f);
     KickParams bodyParams = kDefaultKickParams;
-    bodyParams.transient.clickLevel = 0.0f;
-    bodyParams.transient.noiseLevel = 0.0f;
+    bodyParams.transient.impactLevel = 0.0f;
+    bodyParams.transient.airLevel = 0.0f;
     bodyOnly.setParams(bodyParams);
 
     const auto full = renderHit(withTransient, 1200);
     const auto body = renderHit(bodyOnly, 1200);
-    EXPECT_GT(std::abs(full[0] - body[0]), 0.05f);
+    float earlyTransientDifference = 0.0f;
+    for (std::size_t sample = 0; sample < 240; ++sample) {
+        earlyTransientDifference =
+            std::max(earlyTransientDifference, std::abs(full[sample] - body[sample]));
+    }
+    EXPECT_GT(earlyTransientDifference, 0.05f);
     for (std::size_t sample = 480; sample < full.size(); ++sample) {
         EXPECT_FLOAT_EQ(full[sample], body[sample]);
     }
@@ -92,6 +98,29 @@ TEST(VoiceTest, FinishesAtAmplitudeTrajectoryEnd) {
     for (int sample = 0; sample < 11000; ++sample) {
         voice.renderSample();
     }
+    EXPECT_FALSE(voice.isActive());
+}
+
+TEST(VoiceTest, NonSilentEndpointGetsAShortSmoothTail) {
+    Voice voice;
+    voice.initialize(48000.0f);
+    KickParams params = kDefaultKickParams;
+    params.amplitude[2].timeMs = 10.0f;
+    params.amplitude[3].timeMs = 20.0f;
+    params.amplitude[3].value = 0.0f;
+    params.transient.impactLevel = 0.0f;
+    params.transient.airLevel = 0.0f;
+    params.transient.airDecayMs = 1.0f;
+    voice.setParams(params);
+    voice.trigger(60, 1.0f);
+
+    float sampleBeforeSilence = 0.0f;
+    for (int sample = 0; sample < 1200; ++sample) {
+        sampleBeforeSilence = voice.renderSample();
+    }
+    EXPECT_TRUE(voice.isActive());
+    EXPECT_LT(std::abs(sampleBeforeSilence), 0.001f);
+    EXPECT_FLOAT_EQ(voice.renderSample(), 0.0f);
     EXPECT_FALSE(voice.isActive());
 }
 

@@ -2,6 +2,7 @@
 add_library(kick_drum_audio_engine STATIC
     # Generators
     generators/SineDriver.cpp
+    generators/MembraneModel.cpp
     generators/NoiseGenerator.cpp
     generators/TransientGenerator.cpp
     

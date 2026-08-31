@@ -3,8 +3,6 @@
 #include "NoiseGenerator.h"
 #include "../parameters/KickParams.h"
 
-#include <cstdint>
-
 namespace KickDrum {
 
 class TransientGenerator {
@@ -24,8 +22,10 @@ private:
     TransientParams params_;
     float sampleRate_;
     float lowPassState_;
+    float lowBandState_;
     float lowPassCoefficient_;
-    std::uint32_t sampleIndex_;
+    float lowBandCoefficient_;
+    float contactDurationMs_;
 };
 
 } // namespace KickDrum

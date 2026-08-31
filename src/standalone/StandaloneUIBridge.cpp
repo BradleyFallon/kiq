@@ -39,8 +39,15 @@ bool StandaloneUIBridge::initialize() {
         return false;
     }
 
-    midiHandler_ = std::make_unique<MIDIHandler>(
-        audioEngine_->getVoiceAllocator(), audioEngine_->getParameterManager());
+    // CoreMIDI callbacks run off the audio thread. Route note-on through the
+    // engine's atomic handoff, and leave CC/pitch bend disconnected until they
+    // have equivalent audio-thread event paths.
+    midiHandler_ = std::make_unique<MIDIHandler>(nullptr, nullptr);
+    AudioEngine* const midiTarget = audioEngine_.get();
+    midiHandler_->setNoteOnCallback(
+        [midiTarget](int note, float velocity) {
+            midiTarget->enqueueNoteOn(note, velocity);
+        });
     midiInterface_ = std::make_unique<CoreMIDIInterface>(midiHandler_.get());
     if (midiInterface_->initialize()) {
         const auto devices = midiInterface_->getAvailableDevices();
@@ -97,6 +104,12 @@ void StandaloneUIBridge::endParameterEdit(KickParameterId) {
 void StandaloneUIBridge::triggerAudition() {
     if (audioEngine_) {
         audioEngine_->enqueueNoteOn(36, 1.0f);
+    }
+}
+
+void StandaloneUIBridge::setAuditionLoop(bool enabled, float bpm) {
+    if (audioEngine_) {
+        audioEngine_->setAuditionLoop(enabled, bpm);
     }
 }
 

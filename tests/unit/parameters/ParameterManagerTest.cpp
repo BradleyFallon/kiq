@@ -46,11 +46,11 @@ TEST(ParameterManagerTest, SerializationRoundTripsCurrentModel) {
     ParameterManager source;
     source.registerAllSynthesisParameters();
     source.setParameterValue("pitch2Hz", 61.0f);
-    source.setParameterValue("noiseDecayMs", 12.0f);
+    source.setParameterValue("airDecayMs", 12.0f);
 
     ParameterManager destination;
     destination.registerAllSynthesisParameters();
     EXPECT_TRUE(destination.deserializeFromJSON(source.serializeToJSON("2.0.0")));
     EXPECT_FLOAT_EQ(destination.getParameterValue("pitch2Hz"), 61.0f);
-    EXPECT_FLOAT_EQ(destination.getParameterValue("noiseDecayMs"), 12.0f);
+    EXPECT_FLOAT_EQ(destination.getParameterValue("airDecayMs"), 12.0f);
 }

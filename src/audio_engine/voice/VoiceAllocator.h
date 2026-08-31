@@ -9,7 +9,9 @@ namespace KickDrum {
 /** Small overlap pool for one-shot kick hits. */
 class VoiceAllocator {
 public:
-    static constexpr int kMaxVoices = 4;
+    // Nine voices cover the maximum 2.005 s body at the fastest 240 BPM
+    // audition interval without hard-stealing a still-ringing hit.
+    static constexpr int kMaxVoices = 9;
 
     VoiceAllocator();
 

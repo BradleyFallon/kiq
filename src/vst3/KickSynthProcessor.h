@@ -58,7 +58,9 @@ private:
     std::unique_ptr<KickDrum::AudioEngine> audioEngine_;
     std::vector<float> interleavedBuffer_;
     std::atomic<bool> auditionPending_ {false};
+    float meterPeak_ = 0.0f;
     float previousOutputPeak_ = -1.0f;
+    int64 clipHoldSamplesRemaining_ = 0;
     bool previousOutputClip_ = false;
 };
 

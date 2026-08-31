@@ -16,7 +16,8 @@ namespace KickDrum {
  * Thread Safety:
  * - addEvent() can be called from the UI thread
  * - getEventsForBuffer() is called from the audio thread
- * - Uses mutex for thread-safe access
+ * - The audio consumer uses a non-blocking lock attempt; a contended batch is
+ *   deferred by one buffer rather than stalling realtime rendering
  * 
  * Requirements validated:
  * - 2.10: Update synthesis within 10 milliseconds of parameter change

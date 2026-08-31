@@ -22,6 +22,22 @@ TEST_F(MIDIHandlerTest, NoteOnCreatesVelocityScaledOneShot) {
     EXPECT_EQ(allocator.getVoice(0).getNote(), 36);
 }
 
+TEST_F(MIDIHandlerTest, NoteOnCanBeRoutedToAnAudioThreadSink) {
+    MIDIHandler handler(nullptr, &parameters);
+    int receivedNote = -1;
+    float receivedVelocity = 0.0f;
+    handler.setNoteOnCallback([&](int note, float velocity) {
+        receivedNote = note;
+        receivedVelocity = velocity;
+    });
+
+    handler.handleNoteOn(42, 64);
+
+    EXPECT_EQ(receivedNote, 42);
+    EXPECT_NEAR(receivedVelocity, 64.0f / 127.0f, 1.0e-6f);
+    EXPECT_EQ(allocator.getNumActiveVoices(), 0);
+}
+
 TEST_F(MIDIHandlerTest, NoteOffDoesNotTruncateKick) {
     MIDIHandler handler(&allocator, &parameters);
     handler.handleNoteOn(36, 127);
@@ -39,9 +55,9 @@ TEST_F(MIDIHandlerTest, CCControlsTrajectoryParameter) {
 TEST_F(MIDIHandlerTest, CCLearnRejectsRemovedParameter) {
     MIDIHandler handler(&allocator, &parameters);
     EXPECT_FALSE(handler.enableCCLearn("basePitch"));
-    EXPECT_TRUE(handler.enableCCLearn("noiseLevel"));
+    EXPECT_TRUE(handler.enableCCLearn("airLevel"));
     handler.handleCC(7, 64);
-    EXPECT_EQ(handler.getMappedParameter(7), "noiseLevel");
+    EXPECT_EQ(handler.getMappedParameter(7), "airLevel");
 }
 
 TEST_F(MIDIHandlerTest, PitchBendAppliesRatioToActiveBody) {

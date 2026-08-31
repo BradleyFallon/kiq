@@ -6,25 +6,21 @@ namespace KickDrum {
 namespace DSPUtils {
 
 float softClip(float input) {
-    // Cubic soft clipping algorithm
-    // This provides smooth limiting without harsh distortion
-    
+    // Keep the body untouched below the knee, then approach full scale with a
+    // continuous, monotonic tanh shoulder. The old cubic branch jumped at the
+    // knee and then decreased as its input increased, which created an audible
+    // crackle on otherwise clean kick hits.
+    constexpr float knee = 2.0f / 3.0f;
     const float absInput = std::abs(input);
-    
-    // For small signals, pass through unchanged
-    if (absInput <= 2.0f / 3.0f) {
+
+    if (absInput <= knee) {
         return input;
     }
-    
-    // For signals approaching ±1.0, apply smooth compression
-    if (absInput < 1.0f) {
-        const float sign = (input >= 0.0f) ? 1.0f : -1.0f;
-        const float temp = 2.0f - 3.0f * absInput;
-        return sign * (3.0f - temp * temp) / 3.0f;
-    }
-    
-    // For signals exceeding ±1.0, hard limit to ±1.0
-    return (input >= 0.0f) ? 1.0f : -1.0f;
+
+    constexpr float shoulder = 1.0f - knee;
+    const float distanceIntoShoulder = (absInput - knee) / shoulder;
+    const float magnitude = knee + shoulder * std::tanh(distanceIntoShoulder);
+    return std::copysign(magnitude, input);
 }
 
 void softClipBuffer(float* buffer, size_t numSamples) {

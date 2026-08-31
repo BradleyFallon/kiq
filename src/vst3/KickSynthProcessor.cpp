@@ -70,6 +70,8 @@ tresult PLUGIN_API KickSynthProcessor::setActive(TBool state)
     else // Deactivation
     {
         auditionPending_.store(false, std::memory_order_release);
+        meterPeak_ = 0.0f;
+        clipHoldSamplesRemaining_ = 0;
         // Stop all notes
         audioEngine_->allNotesOff();
     }
@@ -94,7 +96,7 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
 
     if (auditionPending_.exchange(false, std::memory_order_acquire))
     {
-        audioEngine_->noteOn(36, 1.0f);
+        audioEngine_->enqueueNoteOn(36, 1.0f);
     }
 
     // Check if we have audio output
@@ -125,19 +127,42 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
     audioEngine_->processBlock(interleavedBuffer_.data(), numSamples, numChannels);
 
     // De-interleave back to VST3 format
-    float outputPeak = 0.0f;
     for (int32 channel = 0; channel < numChannels; ++channel)
     {
         for (int32 sample = 0; sample < numSamples; ++sample)
         {
             const float value = interleavedBuffer_[sample * numChannels + channel];
             outputBuffers[channel][sample] = value;
-            outputPeak = std::max(outputPeak, std::abs(value));
         }
     }
 
-    const float normalizedPeak = std::clamp(outputPeak, 0.0f, 1.0f);
-    const bool outputClip = outputPeak >= 0.9999f;
+    const float blockPeak = audioEngine_->getOutputPeak();
+    if (blockPeak >= meterPeak_)
+    {
+        meterPeak_ = blockPeak;
+    }
+    else
+    {
+        constexpr double releaseSeconds = 0.15;
+        const double sampleRate = std::max(processSetup.sampleRate, 1.0);
+        const float release = static_cast<float>(
+            std::exp(-static_cast<double>(numSamples) /
+                     (sampleRate * releaseSeconds)));
+        meterPeak_ = std::max(blockPeak, meterPeak_ * release);
+    }
+
+    if (audioEngine_->getOutputClip())
+    {
+        clipHoldSamplesRemaining_ = static_cast<int64>(
+            std::max(processSetup.sampleRate, 1.0) * 0.5);
+    }
+    else
+    {
+        clipHoldSamplesRemaining_ = std::max<int64>(
+            0, clipHoldSamplesRemaining_ - static_cast<int64>(numSamples));
+    }
+    const float normalizedPeak = meterPeak_;
+    const bool outputClip = clipHoldSamplesRemaining_ > 0;
     if (data.outputParameterChanges)
     {
         auto publish = [&data](ParamID id, ParamValue value)
@@ -168,6 +193,19 @@ tresult PLUGIN_API KickSynthProcessor::notify(IMessage* message)
         std::strcmp(message->getMessageID(), kAuditionMessageId) == 0)
     {
         auditionPending_.store(true, std::memory_order_release);
+        return kResultOk;
+    }
+    if (message->getMessageID() &&
+        std::strcmp(message->getMessageID(), kAuditionLoopMessageId) == 0)
+    {
+        int64 enabled = 0;
+        double bpm = 120.0;
+        if (auto* attributes = message->getAttributes())
+        {
+            attributes->getInt(kAuditionLoopEnabledAttribute, enabled);
+            attributes->getFloat(kAuditionLoopBpmAttribute, bpm);
+        }
+        audioEngine_->setAuditionLoop(enabled != 0, static_cast<float>(bpm));
         return kResultOk;
     }
     return AudioEffect::notify(message);

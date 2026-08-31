@@ -15,6 +15,7 @@ public:
     virtual void endParameterEdit(KickParameterId id) = 0;
 
     virtual void triggerAudition() = 0;
+    virtual void setAuditionLoop(bool enabled, float bpm) = 0;
     virtual float getOutputPeak() = 0;
     virtual bool getOutputClip() = 0;
 };
