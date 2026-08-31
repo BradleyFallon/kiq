@@ -8,6 +8,10 @@
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstevents.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
 namespace Steinberg {
 namespace Vst {
 
@@ -65,6 +69,7 @@ tresult PLUGIN_API KickSynthProcessor::setActive(TBool state)
     }
     else // Deactivation
     {
+        auditionPending_.store(false, std::memory_order_release);
         // Stop all notes
         audioEngine_->allNotesOff();
     }
@@ -87,6 +92,11 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
         processMIDIEvents(data.inputEvents);
     }
 
+    if (auditionPending_.exchange(false, std::memory_order_acquire))
+    {
+        audioEngine_->noteOn(36, 1.0f);
+    }
+
     // Check if we have audio output
     if (data.numOutputs == 0 || data.outputs[0].numChannels == 0)
     {
@@ -107,20 +117,60 @@ tresult PLUGIN_API KickSynthProcessor::process(ProcessData& data)
     // Process audio
     // We need to interleave the output for the audio engine
     // The audio engine expects interleaved samples
-    std::vector<float> interleavedBuffer(numSamples * numChannels);
+    const std::size_t requiredSamples = static_cast<std::size_t>(numSamples) *
+                                        static_cast<std::size_t>(numChannels);
+    if (interleavedBuffer_.size() < requiredSamples)
+        interleavedBuffer_.resize(requiredSamples);
     
-    audioEngine_->processBlock(interleavedBuffer.data(), numSamples, numChannels);
+    audioEngine_->processBlock(interleavedBuffer_.data(), numSamples, numChannels);
 
     // De-interleave back to VST3 format
+    float outputPeak = 0.0f;
     for (int32 channel = 0; channel < numChannels; ++channel)
     {
         for (int32 sample = 0; sample < numSamples; ++sample)
         {
-            outputBuffers[channel][sample] = interleavedBuffer[sample * numChannels + channel];
+            const float value = interleavedBuffer_[sample * numChannels + channel];
+            outputBuffers[channel][sample] = value;
+            outputPeak = std::max(outputPeak, std::abs(value));
         }
     }
 
+    const float normalizedPeak = std::clamp(outputPeak, 0.0f, 1.0f);
+    const bool outputClip = outputPeak >= 0.9999f;
+    if (data.outputParameterChanges)
+    {
+        auto publish = [&data](ParamID id, ParamValue value)
+        {
+            int32 queueIndex = 0;
+            if (auto* queue = data.outputParameterChanges->addParameterData(id, queueIndex))
+            {
+                int32 pointIndex = 0;
+                queue->addPoint(0, value, pointIndex);
+            }
+        };
+        if (std::abs(normalizedPeak - previousOutputPeak_) > 1.0e-5f)
+            publish(kParamOutputPeak, normalizedPeak);
+        if (outputClip != previousOutputClip_)
+            publish(kParamOutputClip, outputClip ? 1.0 : 0.0);
+    }
+    previousOutputPeak_ = normalizedPeak;
+    previousOutputClip_ = outputClip;
+
     return kResultOk;
+}
+
+tresult PLUGIN_API KickSynthProcessor::notify(IMessage* message)
+{
+    if (!message)
+        return kInvalidArgument;
+    if (message->getMessageID() &&
+        std::strcmp(message->getMessageID(), kAuditionMessageId) == 0)
+    {
+        auditionPending_.store(true, std::memory_order_release);
+        return kResultOk;
+    }
+    return AudioEffect::notify(message);
 }
 
 //------------------------------------------------------------------------
@@ -228,6 +278,10 @@ tresult PLUGIN_API KickSynthProcessor::setupProcessing(ProcessSetup& newSetup)
     {
         // Initialize audio engine with new sample rate
         audioEngine_->initialize(static_cast<float>(newSetup.sampleRate));
+        audioEngine_->prepare(
+            static_cast<std::size_t>(std::max(newSetup.maxSamplesPerBlock, 0)));
+        interleavedBuffer_.resize(
+            static_cast<std::size_t>(std::max(newSetup.maxSamplesPerBlock, 0)) * 2u);
     }
 
     return result;

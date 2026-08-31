@@ -67,6 +67,21 @@ TEST(AudioEngineTest, OutputGainZeroSilencesHit) {
                             [](float sample) { return sample == 0.0f; }));
 }
 
+TEST(AudioEngineTest, QueuedNoteAndMeterCrossTheAudioThreadBoundary) {
+    AudioEngine engine;
+    engine.initialize(48000.0f);
+    engine.prepare(512);
+    engine.enqueueNoteOn(36, 1.0f);
+
+    std::vector<float> buffer(512);
+    engine.processBlock(buffer.data(), buffer.size(), 1);
+
+    EXPECT_TRUE(std::any_of(buffer.begin(), buffer.end(),
+                            [](float sample) { return sample != 0.0f; }));
+    EXPECT_GT(engine.getOutputPeak(), 0.0f);
+    EXPECT_FLOAT_EQ(engine.getOutputPeak(), 0.0f);
+}
+
 TEST(AudioEngineTest, SampleAccurateEventChangesFollowingSamples) {
     AudioEngine engine;
     engine.initialize(48000.0f);

@@ -3,7 +3,9 @@
 #include "public.sdk/source/vst/vstaudioeffect.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include <atomic>
 #include <memory>
+#include <vector>
 
 namespace KickDrum {
     class AudioEngine;
@@ -43,6 +45,7 @@ public:
     tresult PLUGIN_API getState(IBStream* state) SMTG_OVERRIDE;
     tresult PLUGIN_API setupProcessing(ProcessSetup& newSetup) SMTG_OVERRIDE;
     tresult PLUGIN_API canProcessSampleSize(int32 symbolicSampleSize) SMTG_OVERRIDE;
+    tresult PLUGIN_API notify(IMessage* message) SMTG_OVERRIDE;
 
 protected:
     // Process MIDI events from the event list
@@ -53,6 +56,10 @@ protected:
 
 private:
     std::unique_ptr<KickDrum::AudioEngine> audioEngine_;
+    std::vector<float> interleavedBuffer_;
+    std::atomic<bool> auditionPending_ {false};
+    float previousOutputPeak_ = -1.0f;
+    bool previousOutputClip_ = false;
 };
 
 //------------------------------------------------------------------------

@@ -7,6 +7,9 @@
 #include "../voice/VoiceAllocator.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -25,6 +28,9 @@ public:
     bool enableNaNDetection = true;
     std::vector<float> monoBuffer;
     std::vector<ParameterEvent> currentEvents;
+    std::atomic<std::uint32_t> pendingNoteOn {0};
+    std::atomic<float> outputPeak {0.0f};
+    std::atomic<bool> outputClip {false};
 
     bool applyParameter(const std::string& parameterId, float value) {
         const auto* spec = findKickParameterSpec(parameterId);
@@ -66,6 +72,16 @@ void AudioEngine::initialize(float sampleRate) {
             std::string(spec.key), getKickParameter(pImpl->params, spec.id));
     }
     pImpl->parameterEventQueue->clear();
+    pImpl->pendingNoteOn.store(0, std::memory_order_release);
+    pImpl->outputPeak.store(0.0f, std::memory_order_release);
+    pImpl->outputClip.store(false, std::memory_order_release);
+}
+
+void AudioEngine::prepare(std::size_t maxSamplesPerBlock) {
+    if (pImpl->monoBuffer.size() < maxSamplesPerBlock) {
+        pImpl->monoBuffer.resize(maxSamplesPerBlock);
+    }
+    pImpl->currentEvents.reserve(64);
 }
 
 void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
@@ -78,6 +94,16 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
         pImpl->monoBuffer.resize(numSamples);
     }
     std::fill_n(pImpl->monoBuffer.data(), numSamples, 0.0f);
+
+    const std::uint32_t packedNote =
+        pImpl->pendingNoteOn.exchange(0, std::memory_order_acquire);
+    if (packedNote != 0) {
+        const int note = static_cast<int>((packedNote & 0xffu) - 1u);
+        const float velocity = static_cast<float>((packedNote >> 8u) & 0xffffu) /
+                               65535.0f;
+        pImpl->voiceAllocator->allocateVoice(note, velocity);
+    }
+
     pImpl->parameterEventQueue->getEventsForBuffer(pImpl->currentEvents);
 
     std::size_t currentSample = 0;
@@ -120,8 +146,28 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
         }
     }
 
+    float rawPeak = 0.0f;
+    for (std::size_t sample = 0; sample < numSamples; ++sample) {
+        rawPeak = std::max(rawPeak, std::abs(pImpl->monoBuffer[sample]));
+    }
+
     if (pImpl->enableSoftClipping) {
         DSPUtils::softClipBuffer(pImpl->monoBuffer.data(), numSamples);
+    }
+
+    float renderedPeak = 0.0f;
+    for (std::size_t sample = 0; sample < numSamples; ++sample) {
+        renderedPeak = std::max(renderedPeak, std::abs(pImpl->monoBuffer[sample]));
+    }
+    const float clampedPeak = std::clamp(renderedPeak, 0.0f, 1.0f);
+    float latchedPeak = pImpl->outputPeak.load(std::memory_order_relaxed);
+    while (clampedPeak > latchedPeak &&
+           !pImpl->outputPeak.compare_exchange_weak(
+               latchedPeak, clampedPeak,
+               std::memory_order_release, std::memory_order_relaxed)) {
+    }
+    if (rawPeak >= 1.0f) {
+        pImpl->outputClip.store(true, std::memory_order_release);
     }
 
     if (numChannels == 1) {
@@ -137,6 +183,15 @@ void AudioEngine::processBlock(float* outputBuffer, std::size_t numSamples,
 
 void AudioEngine::noteOn(int note, float velocity) {
     pImpl->voiceAllocator->allocateVoice(note, velocity);
+}
+
+void AudioEngine::enqueueNoteOn(int note, float velocity) {
+    const std::uint32_t encodedNote =
+        static_cast<std::uint32_t>(std::clamp(note, 0, 127) + 1);
+    const std::uint32_t encodedVelocity = static_cast<std::uint32_t>(
+        std::lround(std::clamp(velocity, 0.0f, 1.0f) * 65535.0f));
+    pImpl->pendingNoteOn.store(encodedNote | (encodedVelocity << 8u),
+                               std::memory_order_release);
 }
 
 void AudioEngine::noteOff(int note) {
@@ -161,6 +216,14 @@ void AudioEngine::setOutputGain(float gain) {
 
 float AudioEngine::getOutputGain() const {
     return pImpl->params.outputGain;
+}
+
+float AudioEngine::getOutputPeak() const {
+    return pImpl->outputPeak.exchange(0.0f, std::memory_order_acq_rel);
+}
+
+bool AudioEngine::getOutputClip() const {
+    return pImpl->outputClip.exchange(false, std::memory_order_acq_rel);
 }
 
 void AudioEngine::setSoftClippingEnabled(bool enable) {

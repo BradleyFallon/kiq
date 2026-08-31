@@ -1,4 +1,4 @@
-# Building Kick Drum Synthesizer
+# Building Kiq
 
 This document provides detailed instructions for building the Kick Drum Synthesizer from source.
 
@@ -6,7 +6,7 @@ This document provides detailed instructions for building the Kick Drum Synthesi
 
 ### Required Tools
 
-- **CMake** 3.20 or later
+- **CMake** 3.25 or later
 - **C++17 compatible compiler**:
   - macOS: Xcode Command Line Tools (Clang)
   - Linux: GCC 7+ or Clang 5+
@@ -27,11 +27,12 @@ This document provides detailed instructions for building the Kick Drum Synthesi
 #### Windows
 - Visual Studio 2019 or later with C++ desktop development workload
 
-### Optional Dependencies
+### Graphical Dependencies
 
-#### VST3 SDK (Required for VST3 Plugin)
+#### VST3 SDK and VSTGUI (Required for the Plugin or Standalone App)
 
-The VST3 SDK is required to build the VST3 plugin. Download it from:
+The VST3 SDK checkout, including its VSTGUI submodule, is required to build
+either graphical target. Download it recursively from:
 https://github.com/steinbergmedia/vst3sdk
 
 ```bash
@@ -156,8 +157,10 @@ targets. Its post-build step runs Steinberg's validator.
 ### Standalone App Only
 
 ```bash
-cmake .. -DBUILD_VST3=OFF
-cmake --build . --target KickDrumSynthStandalone
+cmake -S . -B build \
+  -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON -DBUILD_TESTS=OFF
+cmake --build build --target KickDrumSynthStandalone -j
+open build/bin/KickDrumSynthStandalone.app
 ```
 
 ### Tests Only
@@ -238,7 +241,7 @@ cmake .. -DVST3_SDK_PATH=/path/to/vst3sdk
 
 ### CMake Version Too Old
 
-**Error**: `CMake 3.20 or higher is required`
+**Error**: `CMake 3.25 or higher is required`
 
 **Solution**: Update CMake:
 - macOS: `brew upgrade cmake`

@@ -1,35 +1,25 @@
 # Standalone app
 
-Build the macOS app:
+Build and open the graphical macOS app:
 
 ```bash
-cmake -S . -B build -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON
+cmake -S . -B build \
+  -DBUILD_VST3=OFF -DBUILD_STANDALONE=ON -DBUILD_TESTS=OFF
 cmake --build build --target KickDrumSynthStandalone -j
 open build/bin/KickDrumSynthStandalone.app
 ```
 
-The app opens the default CoreAudio output and first available MIDI input. It
-then accepts terminal commands:
+The app opens the default CoreAudio output and connects the first available
+MIDI input. Click **HIT** (or press Space/Return after clicking the editor) to
+audition the current kick.
 
-```text
-play <note> [velocity]
-stop <note>
-param <name> <value>
-list
-midi
-help
-quit
-```
+The pitch and amplitude panels are the actual synthesis trajectories:
 
-Examples:
+- Drag numbered points to edit their value and, except for point 1, time.
+- Drag the smaller dot on each segment to edit curvature.
+- Drag knobs vertically. Shift-drag is finer, the mouse wheel makes small
+  changes, and double-click restores a default.
+- The right-side LEDs show output peak and clip activity.
 
-```text
-play 36 1.0
-param pitch0Hz 260
-param pitch2Hz 48
-param noiseDecayMs 10
-param clickLevel 0.25
-```
-
-`list` prints the authoritative parameter names and ranges. A kick is a
-one-shot, so `stop`/MIDI note-off does not cut its decay short.
+Kicks are one-shots. MIDI note number does not transpose the trajectory;
+velocity changes level, and note-off lets the current decay finish.

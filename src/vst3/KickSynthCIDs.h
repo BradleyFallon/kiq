@@ -45,7 +45,14 @@ enum KickSynthParams : ParamID {
     kParamNoiseDecayMs,
     kParamNoiseToneHz,
     kParamOutputGain,
+
+    // Read-only UI telemetry. These are intentionally outside the engine
+    // parameter range and are never serialized as synthesis state.
+    kParamOutputPeak = 2000,
+    kParamOutputClip,
 };
+
+inline constexpr const char* kAuditionMessageId = "Kiq.Audition";
 
 struct KickSynthParameterMapping {
     ParamID vstId;

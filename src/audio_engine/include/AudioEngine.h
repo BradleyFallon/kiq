@@ -27,6 +27,9 @@ public:
      */
     void initialize(float sampleRate);
 
+    /** Allocate the render buffer before realtime processing starts. */
+    void prepare(std::size_t maxSamplesPerBlock);
+
     /**
      * @brief Process an audio buffer
      * @param outputBuffer Output buffer to fill with audio samples
@@ -41,6 +44,15 @@ public:
      * @param velocity MIDI velocity (0.0-1.0)
      */
     void noteOn(int note, float velocity);
+
+    /**
+     * @brief Queue a note trigger for the start of the next audio block
+     *
+     * This is the thread-safe entry point for UI and other non-audio threads.
+     * If several triggers arrive before the next block, the most recent one is
+     * used.
+     */
+    void enqueueNoteOn(int note, float velocity);
 
     /**
      * @brief Release a note
@@ -68,6 +80,12 @@ public:
 
     /** Get the current output gain. */
     float getOutputGain() const;
+
+    /** Maximum output peak since the previous read, in the [0, 1] range. */
+    float getOutputPeak() const;
+
+    /** Whether the signal reached full scale since the previous read. */
+    bool getOutputClip() const;
 
     /**
      * @brief Enable or disable soft clipping
